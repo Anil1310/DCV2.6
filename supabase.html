@@ -392,11 +392,11 @@
         if (!state.settings || state.settings.supabaseEnabled !== true) return { synced: false };
 
         // An older open tab must not reinsert demo rows after they were wiped.
-        const snapshotResponse = await supabaseFetch('db_json?snapshot_key=eq.main&select=payload');
-        if (!snapshotResponse.ok) {
+        const snapshotCheckResponse = await supabaseFetch('db_json?snapshot_key=eq.main&select=payload');
+        if (!snapshotCheckResponse.ok) {
             throw new Error('Could not verify the Supabase demo-data state before syncing.');
         }
-        const snapshotRows = await snapshotResponse.json();
+        const snapshotRows = await snapshotCheckResponse.json();
         const savedSettings = snapshotRows[0] && snapshotRows[0].payload && snapshotRows[0].payload.settings;
         const savedClearEpoch = String(savedSettings && savedSettings._applicationDataClearEpoch || '');
         const localClearEpoch = String(state.settings && state.settings._applicationDataClearEpoch || '');
@@ -464,18 +464,31 @@
             if (typeof saveStateLocally === 'function') saveStateLocally();
         }
 
-        // 1. Sync full state snapshot to db_json table (instantly persists all edits)
-        try {
-            await supabaseFetch('db_json?snapshot_key=eq.main', {
-                method: 'PATCH',
-                headers: { Prefer: 'return=minimal' },
-                body: JSON.stringify({
-                    payload: supabaseSafeSnapshot(state),
-                    updated_at: new Date().toISOString()
-                })
+        // 1. Upsert the complete state so a missing snapshot row is created too.
+        const snapshotResponse = await supabaseFetch('db_json?on_conflict=snapshot_key', {
+            method: 'POST',
+            headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify({
+                snapshot_key: 'main',
+                payload: supabaseSafeSnapshot(state),
+                updated_at: new Date().toISOString()
+            })
+        });
+        if (!snapshotResponse.ok) {
+            throw new Error('Could not save the full cloud snapshot (HTTP ' + snapshotResponse.status + '): ' +
+                await snapshotResponse.text().catch(function () { return ''; }));
+        }
+        async function upsertRows(tableName, conflictColumn, rows) {
+            if (!rows.length) return;
+            const response = await supabaseFetch(tableName + '?on_conflict=' + conflictColumn, {
+                method: 'POST',
+                headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+                body: JSON.stringify(rows)
             });
-        } catch (dbJsonErr) {
-            console.warn('[Supabase] db_json update notice:', dbJsonErr);
+            if (!response.ok) {
+                throw new Error(tableName + ' sync failed (HTTP ' + response.status + '): ' +
+                    await response.text().catch(function () { return ''; }));
+            }
         }
 
         // 2. Also sync batches and students to their dedicated tables
@@ -547,17 +560,21 @@
                 headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
                 body: JSON.stringify(standardBatchesPayload)
             });
-            if (!bRes.ok) console.warn('[Supabase] batches sync status:', bRes.status, await bRes.text().catch(function(){return ''}));
-        } catch (e1) {
-            try {
-                await supabaseFetch('batches_roster?on_conflict=batch_id', {
+            if (!bRes.ok) {
+                const primaryError = await bRes.text().catch(function () { return ''; });
+                const fallbackResponse = await supabaseFetch('batches_roster?on_conflict=batch_id', {
                     method: 'POST',
                     headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
                     body: JSON.stringify(batchesPayload)
                 });
-            } catch (e2) {
-                console.warn('[Supabase] batches fallback error:', e2);
+                if (!fallbackResponse.ok) {
+                    throw new Error('batches HTTP ' + bRes.status + ' ' + primaryError +
+                        '; batches_roster HTTP ' + fallbackResponse.status + ' ' +
+                        await fallbackResponse.text().catch(function () { return ''; }));
+                }
             }
+        } catch (batchesError) {
+            throw new Error('Could not sync batch data: ' + batchesError.message);
         }
 
         try {
@@ -566,17 +583,21 @@
                 headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
                 body: JSON.stringify(standardStudentsPayload)
             });
-            if (!sRes.ok) console.warn('[Supabase] students sync status:', sRes.status, await sRes.text().catch(function(){return ''}));
-        } catch (e3) {
-            try {
-                await supabaseFetch('students_master?on_conflict=roll_no', {
+            if (!sRes.ok) {
+                const primaryError = await sRes.text().catch(function () { return ''; });
+                const fallbackResponse = await supabaseFetch('students_master?on_conflict=roll_no', {
                     method: 'POST',
                     headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
                     body: JSON.stringify(studentsPayload)
                 });
-            } catch (e4) {
-                console.warn('[Supabase] students fallback error:', e4);
+                if (!fallbackResponse.ok) {
+                    throw new Error('students HTTP ' + sRes.status + ' ' + primaryError +
+                        '; students_master HTTP ' + fallbackResponse.status + ' ' +
+                        await fallbackResponse.text().catch(function () { return ''; }));
+                }
             }
+        } catch (studentsError) {
+            throw new Error('Could not sync student data: ' + studentsError.message);
         }
 
         // 3. Teachers sync
@@ -599,13 +620,7 @@
                     avatar_color: t.avatarColor || 'bg-slate-600'
                 };
             });
-            try {
-                await supabaseFetch('teachers?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(teachersPayload)
-                });
-            } catch (et) {}
+            await upsertRows('teachers', 'id', teachersPayload);
         }
 
         // 4. Materials sync
@@ -622,13 +637,7 @@
                     date: m.date || m.uploadDate || ''
                 };
             });
-            try {
-                await supabaseFetch('materials?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(materialsPayload)
-                });
-            } catch (em) {}
+            await upsertRows('materials', 'id', materialsPayload);
         }
 
         // 5. Offline Tests sync
@@ -646,13 +655,7 @@
                     marks: ot.marks || {}
                 };
             });
-            try {
-                await supabaseFetch('offline_tests?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(testsPayload)
-                });
-            } catch (eot) {}
+            await upsertRows('offline_tests', 'id', testsPayload);
         }
 
         // 6. Gallery sync
@@ -666,13 +669,7 @@
                     date: g.date || ''
                 };
             });
-            try {
-                await supabaseFetch('gallery?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(galleryPayload)
-                });
-            } catch (eg) {}
+            await upsertRows('gallery', 'id', galleryPayload);
         }
 
         // 7. External Links sync
@@ -690,13 +687,7 @@
                     date_added: l.dateAdded || ''
                 };
             });
-            try {
-                await supabaseFetch('external_links?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(linksPayload)
-                });
-            } catch (el) {}
+            await upsertRows('external_links', 'id', linksPayload);
         }
 
         // 8. Feedbacks sync
@@ -711,13 +702,7 @@
                     created_at: f.date || f.created_at || ''
                 };
             });
-            try {
-                await supabaseFetch('feedbacks?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(feedbacksPayload)
-                });
-            } catch (ef) {}
+            await upsertRows('feedbacks', 'id', feedbacksPayload);
         }
 
         // 9. Attendance sync
@@ -737,13 +722,7 @@
                     };
                 });
             if (attendancePayload.length) {
-                try {
-                    await supabaseFetch('attendance?on_conflict=id', {
-                        method: 'POST',
-                        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                        body: JSON.stringify(attendancePayload)
-                    });
-                } catch (eatt) {}
+                await upsertRows('attendance', 'id', attendancePayload);
             }
         }
 
@@ -1240,7 +1219,7 @@
     }
 
     function crossDeviceComparableState(value) {
-        const keys = ['batches', 'students', 'materials', 'offlineTests', 'teachers', 'gallery', 'externalLinks', 'feedbacks', 'notifications'];
+        const keys = ['batches', 'students', 'materials', 'offlineTests', 'teachers', 'gallery', 'externalLinks', 'feedbacks', 'notifications', 'attendanceRecords'];
         const comparable = {};
         keys.forEach(function (key) {
             comparable[key] = value && Array.isArray(value[key]) ? value[key] : [];
@@ -1266,11 +1245,6 @@
                 activeStudentId: state.activeStudentId,
                 settings: state.settings || {}
             };
-            ['batches', 'students', 'materials', 'offlineTests', 'teachers', 'gallery'].forEach(function(tbl) {
-                if (Array.isArray(state[tbl]) && state[tbl].length > 0 && Array.isArray(payload[tbl]) && payload[tbl].length === 0) {
-                    payload[tbl] = state[tbl];
-                }
-            });
             state = Object.assign({}, payload, session);
             state.settings = Object.assign({}, session.settings || {}, payload.settings || {});
             saveStateLocally(true, true);
@@ -1337,7 +1311,6 @@
 
     function canBackgroundRerenderMainContent(changedKeys) {
         if (!state || !state.isAuthenticated) return false;
-        if (state.activeTab === 'dashboard' || state.activeTab === 'home') return false;
         const activeEl = document.activeElement;
         if (activeEl && activeEl.closest && activeEl.closest('#main-content') && /^(INPUT|TEXTAREA|SELECT)$/.test(activeEl.tagName)) {
             return false;

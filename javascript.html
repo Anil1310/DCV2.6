@@ -472,12 +472,34 @@
         let autoSyncTimer = null;
         let manualSyncPromise = null;
 
+        function getSyncTimestamp() {
+            return new Date().toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            });
+        }
+
         function updateSyncBadge(text, status) {
             const btn = document.getElementById('btn-sync');
             const icon = document.getElementById('sync-icon');
+            const label = document.getElementById('sync-label');
+            const badgeText = String(text || '');
+            const completedSync = status === 'success' && /synced|refreshed/i.test(badgeText);
+            let labelText = badgeText.replace(/^✓\s*/, '');
+
             if (btn && text) {
                 btn.title = text;
+                btn.classList.toggle('is-error', status === 'error');
+                if (completedSync) state.lastSyncTime = getSyncTimestamp();
             }
+            if (status === 'syncing') labelText = 'Syncing...';
+            else if (status === 'error') labelText = 'Sync failed';
+            else if (completedSync) labelText = 'Synced ' + state.lastSyncTime;
+
+            if (label) label.textContent = labelText;
+            if (btn && text) btn.setAttribute('aria-label', 'Sync with Cloud. ' + labelText);
             if (icon) {
                 if (status === 'error') {
                     icon.className = 'fa-solid fa-cloud text-sm text-rose-500';
@@ -487,6 +509,18 @@
                     icon.className = 'fa-solid fa-cloud text-sm text-indigo-600 dark:text-indigo-400';
                 }
             }
+        }
+
+        function toggleSyncButton() {
+            const btn = document.getElementById('btn-sync');
+            if (!btn) return;
+
+            const isExpanded = btn.classList.contains('is-expanded');
+            btn.classList.toggle('is-expanded', !isExpanded);
+            btn.classList.toggle('is-collapsed', isExpanded);
+            btn.setAttribute('aria-expanded', String(!isExpanded));
+
+            if (!isExpanded) syncWithDatabase();
         }
 
         function autoSyncToDatabase() {
@@ -512,7 +546,7 @@
                 syncPendingDataToSupabase();
             }
                             }
-                            state.lastSyncTime = new Date().toLocaleTimeString();
+                            state.lastSyncTime = getSyncTimestamp();
                             updateSyncBadge('✓ Cloud Synced (' + state.lastSyncTime + ')', 'success');
                         })
                         .withFailureHandler(function (err) {
@@ -521,7 +555,7 @@
                         })
                         .apiSyncAllData(state);
                 } else {
-                    state.lastSyncTime = new Date().toLocaleTimeString();
+                    state.lastSyncTime = getSyncTimestamp();
                     updateSyncBadge('✓ Saved locally (' + state.lastSyncTime + ')', 'info');
                 }
             }, 350);
@@ -550,8 +584,9 @@
         window.getNextSequenceId = getNextSequenceId;
 
         function saveStateLocally(skipRemoteSync, skipSupabaseSync) {
+            let hasDataChanged = true;
             try {
-                localStorage.setItem(CACHE_KEY, JSON.stringify({
+                const snapshot = JSON.stringify({
                     batches: state.batches,
                     students: state.students,
                     materials: state.materials,
@@ -562,10 +597,15 @@
                     feedbacks: state.feedbacks,
                     settings: state.settings,
                     notifications: state.notifications || []
-                }));
+                });
+                hasDataChanged = localStorage.getItem(CACHE_KEY) !== snapshot;
+                if (hasDataChanged) localStorage.setItem(CACHE_KEY, snapshot);
             } catch (e) {
                 console.warn('Could not save local cache', e);
             }
+
+            // Repeated saves of the same state should not trigger cloud writes.
+            if (!hasDataChanged) return;
 
             // Real-time synchronization to Supabase on EVERY change
             if (!skipSupabaseSync && typeof autoSyncToSupabase === 'function') {
@@ -658,16 +698,26 @@
             if (manualSyncPromise) return manualSyncPromise;
 
             updateSyncBadge('Syncing in the background…', 'syncing');
-            if (state.settings && state.settings.supabaseEnabled === true &&
-                typeof syncPendingDataToSupabase === 'function') {
-                manualSyncPromise = syncPendingDataToSupabase();
-            } else if (typeof google !== 'undefined' && google.script && google.script.run) {
+            const syncRevision = localDataRevision;
+            const hasAppsScriptBridge = typeof google !== 'undefined' && google.script && google.script.run;
+            const supabaseEnabled = state.settings && state.settings.supabaseEnabled === true;
+            if (hasAppsScriptBridge) {
                 manualSyncPromise = new Promise(function (resolve, reject) {
                     google.script.run
                         .withSuccessHandler(resolve)
                         .withFailureHandler(reject)
                         .apiSyncAllData(state);
+                }).then(function (result) {
+                    if (!result || result.success !== true) {
+                        throw new Error(result && result.error || 'Cloud sync is not available.');
+                    }
+                    if (supabaseEnabled && typeof syncPendingDataToSupabase === 'function') {
+                        return syncPendingDataToSupabase();
+                    }
+                    return result;
                 });
+            } else if (supabaseEnabled && typeof syncPendingDataToSupabase === 'function') {
+                manualSyncPromise = syncPendingDataToSupabase();
             } else {
                 manualSyncPromise = Promise.resolve({ localOnly: true });
             }
@@ -676,7 +726,11 @@
                 if (result && (result.success === false || result.synced === false) && !result.localOnly) {
                     throw new Error(result.error || result.reason || 'Cloud sync is not available.');
                 }
-                state.lastSyncTime = new Date().toLocaleTimeString();
+                if (!result || (result.synced !== true && result.localOnly !== true && result.success !== true)) {
+                    throw new Error('Cloud sync did not confirm that all data was saved.');
+                }
+                if (syncRevision === localDataRevision) localStorage.removeItem(PENDING_SYNC_KEY);
+                state.lastSyncTime = getSyncTimestamp();
                 updateSyncBadge(result && result.localOnly
                     ? '✓ Saved locally (' + state.lastSyncTime + ')'
                     : '✓ Cloud Synced (' + state.lastSyncTime + ')',
@@ -10442,6 +10496,17 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
                                 const remoteBefore = typeof crossDeviceComparableState === 'function' ? crossDeviceComparableState(state) : '';
                                 loadDataFromSupabase().then(function (syncResult) {
                                     if (syncResult && syncResult.skipped) return;
+                                    [
+                                        'batches', 'students', 'teachers', 'materials', 'offlineTests',
+                                        'gallery', 'externalLinks', 'feedbacks', 'notifications', 'attendanceRecords'
+                                    ].forEach(function (key) {
+                                        const tableRows = state[key];
+                                        const cloudRows = remoteData[key];
+                                        if ((!Array.isArray(tableRows) || tableRows.length === 0) &&
+                                            Array.isArray(cloudRows) && cloudRows.length > 0) {
+                                            state[key] = cloudRows;
+                                        }
+                                    });
                                     saveStateLocally(true, true);
                                     localStorage.removeItem(PENDING_SYNC_KEY);
                                     if (typeof savePersistentSettingsToLocal === 'function') {

@@ -69,6 +69,93 @@
     #header-action-controls #dev-quick-links {
         display: none !important;
     }
+    #btn-sync.sync-status-button {
+        align-items: center;
+        background: #ecfdf5;
+        border: 1px solid #6ee7b7;
+        border-radius: 9999px;
+        box-sizing: border-box;
+        color: #047857;
+        display: inline-flex;
+        font-size: 12px;
+        font-weight: 600;
+        gap: 0;
+        height: 2.25rem;
+        justify-content: center;
+        overflow: hidden;
+        padding: 0 0.625rem;
+        transition: width 180ms ease, gap 180ms ease, background-color 180ms ease;
+        width: 2.25rem;
+    }
+    #btn-sync #sync-icon {
+        color: currentColor;
+        flex: 0 0 auto;
+        font-size: 0.875rem;
+    }
+    #btn-sync .sync-status-label {
+        max-width: 0;
+        opacity: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        transition: max-width 180ms ease, opacity 120ms ease;
+        white-space: nowrap;
+    }
+    #btn-sync:focus-visible,
+    #btn-sync.is-expanded {
+        gap: 0.5rem;
+        justify-content: flex-start;
+        width: 12rem;
+    }
+    @media (hover: hover) {
+        #btn-sync:hover {
+            gap: 0.5rem;
+            justify-content: flex-start;
+            width: 12rem;
+        }
+    }
+    #btn-sync:focus-visible {
+        outline: 2px solid #047857;
+        outline-offset: 2px;
+    }
+    #btn-sync:focus-visible .sync-status-label,
+    #btn-sync.is-expanded .sync-status-label {
+        max-width: 10rem;
+        opacity: 1;
+    }
+    @media (hover: hover) {
+        #btn-sync:hover .sync-status-label {
+            max-width: 10rem;
+            opacity: 1;
+        }
+    }
+    #btn-sync.is-collapsed,
+    #btn-sync.is-collapsed:hover,
+    #btn-sync.is-collapsed:focus-visible {
+        gap: 0;
+        justify-content: center;
+        width: 2.25rem;
+    }
+    #btn-sync.is-collapsed .sync-status-label,
+    #btn-sync.is-collapsed:hover .sync-status-label,
+    #btn-sync.is-collapsed:focus-visible .sync-status-label {
+        max-width: 0;
+        opacity: 0;
+    }
+    html.dark #btn-sync.sync-status-button {
+        background: #052e2b;
+        border-color: #047857;
+        color: #6ee7b7;
+    }
+    #btn-sync.is-error {
+        background: #fff1f2;
+        border-color: #fda4af;
+        color: #be123c;
+    }
+    html.dark #btn-sync.is-error {
+        background: #4c0519;
+        border-color: #9f1239;
+        color: #fda4af;
+    }
     h1, h2, h3, .font-heading {
         font-family: 'Outfit', sans-serif;
     }
@@ -950,12 +1037,12 @@
                     <!-- Right: Alert & Sync Icons + User Profile -->
                     <span id="header-actions-placeholder" class="hidden"></span>
                     <div id="header-action-controls" class="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
-                        <!-- 1. Cloud Sync Icon Button -->
-                        <button onclick="syncWithDatabase()" id="btn-sync" title="Sync with Cloud"
-                            class="w-8 h-8 sm:w-9 sm:h-9 rounded-xl text-xs font-semibold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700 transition shadow-2xs flex items-center justify-center cursor-pointer shrink-0"
-                            aria-label="Sync with Cloud">
-                            <i class="fa-solid fa-cloud text-xs sm:text-sm text-slate-600 dark:text-slate-400"
-                                id="sync-icon"></i>
+                        <!-- 1. Cloud Sync Status Button -->
+                        <button onclick="toggleSyncButton()" id="btn-sync" title="Sync with Cloud"
+                            class="sync-status-button cursor-pointer shrink-0"
+                            aria-label="Sync with Cloud" aria-expanded="false" aria-controls="sync-label">
+                            <i class="fa-solid fa-cloud" id="sync-icon"></i>
+                            <span id="sync-label" class="sync-status-label" aria-live="polite">Sync now</span>
                         </button>
 
                         <!-- 2. Dark / Light Theme Button -->
@@ -1638,11 +1725,11 @@ window.DIVINE_PAGE_BACKENDS = {
         if (!state.settings || state.settings.supabaseEnabled !== true) return { synced: false };
 
         // An older open tab must not reinsert demo rows after they were wiped.
-        const snapshotResponse = await supabaseFetch('db_json?snapshot_key=eq.main&select=payload');
-        if (!snapshotResponse.ok) {
+        const snapshotCheckResponse = await supabaseFetch('db_json?snapshot_key=eq.main&select=payload');
+        if (!snapshotCheckResponse.ok) {
             throw new Error('Could not verify the Supabase demo-data state before syncing.');
         }
-        const snapshotRows = await snapshotResponse.json();
+        const snapshotRows = await snapshotCheckResponse.json();
         const savedSettings = snapshotRows[0] && snapshotRows[0].payload && snapshotRows[0].payload.settings;
         const savedClearEpoch = String(savedSettings && savedSettings._applicationDataClearEpoch || '');
         const localClearEpoch = String(state.settings && state.settings._applicationDataClearEpoch || '');
@@ -1710,18 +1797,31 @@ window.DIVINE_PAGE_BACKENDS = {
             if (typeof saveStateLocally === 'function') saveStateLocally();
         }
 
-        // 1. Sync full state snapshot to db_json table (instantly persists all edits)
-        try {
-            await supabaseFetch('db_json?snapshot_key=eq.main', {
-                method: 'PATCH',
-                headers: { Prefer: 'return=minimal' },
-                body: JSON.stringify({
-                    payload: supabaseSafeSnapshot(state),
-                    updated_at: new Date().toISOString()
-                })
+        // 1. Upsert the complete state so a missing snapshot row is created too.
+        const snapshotResponse = await supabaseFetch('db_json?on_conflict=snapshot_key', {
+            method: 'POST',
+            headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+            body: JSON.stringify({
+                snapshot_key: 'main',
+                payload: supabaseSafeSnapshot(state),
+                updated_at: new Date().toISOString()
+            })
+        });
+        if (!snapshotResponse.ok) {
+            throw new Error('Could not save the full cloud snapshot (HTTP ' + snapshotResponse.status + '): ' +
+                await snapshotResponse.text().catch(function () { return ''; }));
+        }
+        async function upsertRows(tableName, conflictColumn, rows) {
+            if (!rows.length) return;
+            const response = await supabaseFetch(tableName + '?on_conflict=' + conflictColumn, {
+                method: 'POST',
+                headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+                body: JSON.stringify(rows)
             });
-        } catch (dbJsonErr) {
-            console.warn('[Supabase] db_json update notice:', dbJsonErr);
+            if (!response.ok) {
+                throw new Error(tableName + ' sync failed (HTTP ' + response.status + '): ' +
+                    await response.text().catch(function () { return ''; }));
+            }
         }
 
         // 2. Also sync batches and students to their dedicated tables
@@ -1793,17 +1893,21 @@ window.DIVINE_PAGE_BACKENDS = {
                 headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
                 body: JSON.stringify(standardBatchesPayload)
             });
-            if (!bRes.ok) console.warn('[Supabase] batches sync status:', bRes.status, await bRes.text().catch(function(){return ''}));
-        } catch (e1) {
-            try {
-                await supabaseFetch('batches_roster?on_conflict=batch_id', {
+            if (!bRes.ok) {
+                const primaryError = await bRes.text().catch(function () { return ''; });
+                const fallbackResponse = await supabaseFetch('batches_roster?on_conflict=batch_id', {
                     method: 'POST',
                     headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
                     body: JSON.stringify(batchesPayload)
                 });
-            } catch (e2) {
-                console.warn('[Supabase] batches fallback error:', e2);
+                if (!fallbackResponse.ok) {
+                    throw new Error('batches HTTP ' + bRes.status + ' ' + primaryError +
+                        '; batches_roster HTTP ' + fallbackResponse.status + ' ' +
+                        await fallbackResponse.text().catch(function () { return ''; }));
+                }
             }
+        } catch (batchesError) {
+            throw new Error('Could not sync batch data: ' + batchesError.message);
         }
 
         try {
@@ -1812,17 +1916,21 @@ window.DIVINE_PAGE_BACKENDS = {
                 headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
                 body: JSON.stringify(standardStudentsPayload)
             });
-            if (!sRes.ok) console.warn('[Supabase] students sync status:', sRes.status, await sRes.text().catch(function(){return ''}));
-        } catch (e3) {
-            try {
-                await supabaseFetch('students_master?on_conflict=roll_no', {
+            if (!sRes.ok) {
+                const primaryError = await sRes.text().catch(function () { return ''; });
+                const fallbackResponse = await supabaseFetch('students_master?on_conflict=roll_no', {
                     method: 'POST',
                     headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
                     body: JSON.stringify(studentsPayload)
                 });
-            } catch (e4) {
-                console.warn('[Supabase] students fallback error:', e4);
+                if (!fallbackResponse.ok) {
+                    throw new Error('students HTTP ' + sRes.status + ' ' + primaryError +
+                        '; students_master HTTP ' + fallbackResponse.status + ' ' +
+                        await fallbackResponse.text().catch(function () { return ''; }));
+                }
             }
+        } catch (studentsError) {
+            throw new Error('Could not sync student data: ' + studentsError.message);
         }
 
         // 3. Teachers sync
@@ -1845,13 +1953,7 @@ window.DIVINE_PAGE_BACKENDS = {
                     avatar_color: t.avatarColor || 'bg-slate-600'
                 };
             });
-            try {
-                await supabaseFetch('teachers?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(teachersPayload)
-                });
-            } catch (et) {}
+            await upsertRows('teachers', 'id', teachersPayload);
         }
 
         // 4. Materials sync
@@ -1868,13 +1970,7 @@ window.DIVINE_PAGE_BACKENDS = {
                     date: m.date || m.uploadDate || ''
                 };
             });
-            try {
-                await supabaseFetch('materials?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(materialsPayload)
-                });
-            } catch (em) {}
+            await upsertRows('materials', 'id', materialsPayload);
         }
 
         // 5. Offline Tests sync
@@ -1892,13 +1988,7 @@ window.DIVINE_PAGE_BACKENDS = {
                     marks: ot.marks || {}
                 };
             });
-            try {
-                await supabaseFetch('offline_tests?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(testsPayload)
-                });
-            } catch (eot) {}
+            await upsertRows('offline_tests', 'id', testsPayload);
         }
 
         // 6. Gallery sync
@@ -1912,13 +2002,7 @@ window.DIVINE_PAGE_BACKENDS = {
                     date: g.date || ''
                 };
             });
-            try {
-                await supabaseFetch('gallery?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(galleryPayload)
-                });
-            } catch (eg) {}
+            await upsertRows('gallery', 'id', galleryPayload);
         }
 
         // 7. External Links sync
@@ -1936,13 +2020,7 @@ window.DIVINE_PAGE_BACKENDS = {
                     date_added: l.dateAdded || ''
                 };
             });
-            try {
-                await supabaseFetch('external_links?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(linksPayload)
-                });
-            } catch (el) {}
+            await upsertRows('external_links', 'id', linksPayload);
         }
 
         // 8. Feedbacks sync
@@ -1957,13 +2035,7 @@ window.DIVINE_PAGE_BACKENDS = {
                     created_at: f.date || f.created_at || ''
                 };
             });
-            try {
-                await supabaseFetch('feedbacks?on_conflict=id', {
-                    method: 'POST',
-                    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                    body: JSON.stringify(feedbacksPayload)
-                });
-            } catch (ef) {}
+            await upsertRows('feedbacks', 'id', feedbacksPayload);
         }
 
         // 9. Attendance sync
@@ -1983,13 +2055,7 @@ window.DIVINE_PAGE_BACKENDS = {
                     };
                 });
             if (attendancePayload.length) {
-                try {
-                    await supabaseFetch('attendance?on_conflict=id', {
-                        method: 'POST',
-                        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-                        body: JSON.stringify(attendancePayload)
-                    });
-                } catch (eatt) {}
+                await upsertRows('attendance', 'id', attendancePayload);
             }
         }
 
@@ -2486,7 +2552,7 @@ window.DIVINE_PAGE_BACKENDS = {
     }
 
     function crossDeviceComparableState(value) {
-        const keys = ['batches', 'students', 'materials', 'offlineTests', 'teachers', 'gallery', 'externalLinks', 'feedbacks', 'notifications'];
+        const keys = ['batches', 'students', 'materials', 'offlineTests', 'teachers', 'gallery', 'externalLinks', 'feedbacks', 'notifications', 'attendanceRecords'];
         const comparable = {};
         keys.forEach(function (key) {
             comparable[key] = value && Array.isArray(value[key]) ? value[key] : [];
@@ -2512,11 +2578,6 @@ window.DIVINE_PAGE_BACKENDS = {
                 activeStudentId: state.activeStudentId,
                 settings: state.settings || {}
             };
-            ['batches', 'students', 'materials', 'offlineTests', 'teachers', 'gallery'].forEach(function(tbl) {
-                if (Array.isArray(state[tbl]) && state[tbl].length > 0 && Array.isArray(payload[tbl]) && payload[tbl].length === 0) {
-                    payload[tbl] = state[tbl];
-                }
-            });
             state = Object.assign({}, payload, session);
             state.settings = Object.assign({}, session.settings || {}, payload.settings || {});
             saveStateLocally(true, true);
@@ -2583,7 +2644,6 @@ window.DIVINE_PAGE_BACKENDS = {
 
     function canBackgroundRerenderMainContent(changedKeys) {
         if (!state || !state.isAuthenticated) return false;
-        if (state.activeTab === 'dashboard' || state.activeTab === 'home') return false;
         const activeEl = document.activeElement;
         if (activeEl && activeEl.closest && activeEl.closest('#main-content') && /^(INPUT|TEXTAREA|SELECT)$/.test(activeEl.tagName)) {
             return false;
@@ -4213,12 +4273,34 @@ window.DIVINE_PAGE_BACKENDS = {
         let autoSyncTimer = null;
         let manualSyncPromise = null;
 
+        function getSyncTimestamp() {
+            return new Date().toLocaleTimeString('en-US', {
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: true
+            });
+        }
+
         function updateSyncBadge(text, status) {
             const btn = document.getElementById('btn-sync');
             const icon = document.getElementById('sync-icon');
+            const label = document.getElementById('sync-label');
+            const badgeText = String(text || '');
+            const completedSync = status === 'success' && /synced|refreshed/i.test(badgeText);
+            let labelText = badgeText.replace(/^✓\s*/, '');
+
             if (btn && text) {
                 btn.title = text;
+                btn.classList.toggle('is-error', status === 'error');
+                if (completedSync) state.lastSyncTime = getSyncTimestamp();
             }
+            if (status === 'syncing') labelText = 'Syncing...';
+            else if (status === 'error') labelText = 'Sync failed';
+            else if (completedSync) labelText = 'Synced ' + state.lastSyncTime;
+
+            if (label) label.textContent = labelText;
+            if (btn && text) btn.setAttribute('aria-label', 'Sync with Cloud. ' + labelText);
             if (icon) {
                 if (status === 'error') {
                     icon.className = 'fa-solid fa-cloud text-sm text-rose-500';
@@ -4228,6 +4310,18 @@ window.DIVINE_PAGE_BACKENDS = {
                     icon.className = 'fa-solid fa-cloud text-sm text-indigo-600 dark:text-indigo-400';
                 }
             }
+        }
+
+        function toggleSyncButton() {
+            const btn = document.getElementById('btn-sync');
+            if (!btn) return;
+
+            const isExpanded = btn.classList.contains('is-expanded');
+            btn.classList.toggle('is-expanded', !isExpanded);
+            btn.classList.toggle('is-collapsed', isExpanded);
+            btn.setAttribute('aria-expanded', String(!isExpanded));
+
+            if (!isExpanded) syncWithDatabase();
         }
 
         function autoSyncToDatabase() {
@@ -4253,7 +4347,7 @@ window.DIVINE_PAGE_BACKENDS = {
                 syncPendingDataToSupabase();
             }
                             }
-                            state.lastSyncTime = new Date().toLocaleTimeString();
+                            state.lastSyncTime = getSyncTimestamp();
                             updateSyncBadge('✓ Cloud Synced (' + state.lastSyncTime + ')', 'success');
                         })
                         .withFailureHandler(function (err) {
@@ -4262,7 +4356,7 @@ window.DIVINE_PAGE_BACKENDS = {
                         })
                         .apiSyncAllData(state);
                 } else {
-                    state.lastSyncTime = new Date().toLocaleTimeString();
+                    state.lastSyncTime = getSyncTimestamp();
                     updateSyncBadge('✓ Saved locally (' + state.lastSyncTime + ')', 'info');
                 }
             }, 350);
@@ -4291,8 +4385,9 @@ window.DIVINE_PAGE_BACKENDS = {
         window.getNextSequenceId = getNextSequenceId;
 
         function saveStateLocally(skipRemoteSync, skipSupabaseSync) {
+            let hasDataChanged = true;
             try {
-                localStorage.setItem(CACHE_KEY, JSON.stringify({
+                const snapshot = JSON.stringify({
                     batches: state.batches,
                     students: state.students,
                     materials: state.materials,
@@ -4303,10 +4398,15 @@ window.DIVINE_PAGE_BACKENDS = {
                     feedbacks: state.feedbacks,
                     settings: state.settings,
                     notifications: state.notifications || []
-                }));
+                });
+                hasDataChanged = localStorage.getItem(CACHE_KEY) !== snapshot;
+                if (hasDataChanged) localStorage.setItem(CACHE_KEY, snapshot);
             } catch (e) {
                 console.warn('Could not save local cache', e);
             }
+
+            // Repeated saves of the same state should not trigger cloud writes.
+            if (!hasDataChanged) return;
 
             // Real-time synchronization to Supabase on EVERY change
             if (!skipSupabaseSync && typeof autoSyncToSupabase === 'function') {
@@ -4399,16 +4499,26 @@ window.DIVINE_PAGE_BACKENDS = {
             if (manualSyncPromise) return manualSyncPromise;
 
             updateSyncBadge('Syncing in the background…', 'syncing');
-            if (state.settings && state.settings.supabaseEnabled === true &&
-                typeof syncPendingDataToSupabase === 'function') {
-                manualSyncPromise = syncPendingDataToSupabase();
-            } else if (typeof google !== 'undefined' && google.script && google.script.run) {
+            const syncRevision = localDataRevision;
+            const hasAppsScriptBridge = typeof google !== 'undefined' && google.script && google.script.run;
+            const supabaseEnabled = state.settings && state.settings.supabaseEnabled === true;
+            if (hasAppsScriptBridge) {
                 manualSyncPromise = new Promise(function (resolve, reject) {
                     google.script.run
                         .withSuccessHandler(resolve)
                         .withFailureHandler(reject)
                         .apiSyncAllData(state);
+                }).then(function (result) {
+                    if (!result || result.success !== true) {
+                        throw new Error(result && result.error || 'Cloud sync is not available.');
+                    }
+                    if (supabaseEnabled && typeof syncPendingDataToSupabase === 'function') {
+                        return syncPendingDataToSupabase();
+                    }
+                    return result;
                 });
+            } else if (supabaseEnabled && typeof syncPendingDataToSupabase === 'function') {
+                manualSyncPromise = syncPendingDataToSupabase();
             } else {
                 manualSyncPromise = Promise.resolve({ localOnly: true });
             }
@@ -4417,7 +4527,11 @@ window.DIVINE_PAGE_BACKENDS = {
                 if (result && (result.success === false || result.synced === false) && !result.localOnly) {
                     throw new Error(result.error || result.reason || 'Cloud sync is not available.');
                 }
-                state.lastSyncTime = new Date().toLocaleTimeString();
+                if (!result || (result.synced !== true && result.localOnly !== true && result.success !== true)) {
+                    throw new Error('Cloud sync did not confirm that all data was saved.');
+                }
+                if (syncRevision === localDataRevision) localStorage.removeItem(PENDING_SYNC_KEY);
+                state.lastSyncTime = getSyncTimestamp();
                 updateSyncBadge(result && result.localOnly
                     ? '✓ Saved locally (' + state.lastSyncTime + ')'
                     : '✓ Cloud Synced (' + state.lastSyncTime + ')',
@@ -14183,6 +14297,17 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
                                 const remoteBefore = typeof crossDeviceComparableState === 'function' ? crossDeviceComparableState(state) : '';
                                 loadDataFromSupabase().then(function (syncResult) {
                                     if (syncResult && syncResult.skipped) return;
+                                    [
+                                        'batches', 'students', 'teachers', 'materials', 'offlineTests',
+                                        'gallery', 'externalLinks', 'feedbacks', 'notifications', 'attendanceRecords'
+                                    ].forEach(function (key) {
+                                        const tableRows = state[key];
+                                        const cloudRows = remoteData[key];
+                                        if ((!Array.isArray(tableRows) || tableRows.length === 0) &&
+                                            Array.isArray(cloudRows) && cloudRows.length > 0) {
+                                            state[key] = cloudRows;
+                                        }
+                                    });
                                     saveStateLocally(true, true);
                                     localStorage.removeItem(PENDING_SYNC_KEY);
                                     if (typeof savePersistentSettingsToLocal === 'function') {

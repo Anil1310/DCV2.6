@@ -34,6 +34,93 @@
     #header-action-controls #dev-quick-links {
         display: none !important;
     }
+    #btn-sync.sync-status-button {
+        align-items: center;
+        background: #ecfdf5;
+        border: 1px solid #6ee7b7;
+        border-radius: 9999px;
+        box-sizing: border-box;
+        color: #047857;
+        display: inline-flex;
+        font-size: 12px;
+        font-weight: 600;
+        gap: 0;
+        height: 2.25rem;
+        justify-content: center;
+        overflow: hidden;
+        padding: 0 0.625rem;
+        transition: width 180ms ease, gap 180ms ease, background-color 180ms ease;
+        width: 2.25rem;
+    }
+    #btn-sync #sync-icon {
+        color: currentColor;
+        flex: 0 0 auto;
+        font-size: 0.875rem;
+    }
+    #btn-sync .sync-status-label {
+        max-width: 0;
+        opacity: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        transition: max-width 180ms ease, opacity 120ms ease;
+        white-space: nowrap;
+    }
+    #btn-sync:focus-visible,
+    #btn-sync.is-expanded {
+        gap: 0.5rem;
+        justify-content: flex-start;
+        width: 12rem;
+    }
+    @media (hover: hover) {
+        #btn-sync:hover {
+            gap: 0.5rem;
+            justify-content: flex-start;
+            width: 12rem;
+        }
+    }
+    #btn-sync:focus-visible {
+        outline: 2px solid #047857;
+        outline-offset: 2px;
+    }
+    #btn-sync:focus-visible .sync-status-label,
+    #btn-sync.is-expanded .sync-status-label {
+        max-width: 10rem;
+        opacity: 1;
+    }
+    @media (hover: hover) {
+        #btn-sync:hover .sync-status-label {
+            max-width: 10rem;
+            opacity: 1;
+        }
+    }
+    #btn-sync.is-collapsed,
+    #btn-sync.is-collapsed:hover,
+    #btn-sync.is-collapsed:focus-visible {
+        gap: 0;
+        justify-content: center;
+        width: 2.25rem;
+    }
+    #btn-sync.is-collapsed .sync-status-label,
+    #btn-sync.is-collapsed:hover .sync-status-label,
+    #btn-sync.is-collapsed:focus-visible .sync-status-label {
+        max-width: 0;
+        opacity: 0;
+    }
+    html.dark #btn-sync.sync-status-button {
+        background: #052e2b;
+        border-color: #047857;
+        color: #6ee7b7;
+    }
+    #btn-sync.is-error {
+        background: #fff1f2;
+        border-color: #fda4af;
+        color: #be123c;
+    }
+    html.dark #btn-sync.is-error {
+        background: #4c0519;
+        border-color: #9f1239;
+        color: #fda4af;
+    }
     h1, h2, h3, .font-heading {
         font-family: 'Outfit', sans-serif;
     }

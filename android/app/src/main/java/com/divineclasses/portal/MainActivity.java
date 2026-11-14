@@ -202,7 +202,7 @@ public final class MainActivity extends ComponentActivity {
         webView.getSettings().setJavaScriptEnabled(true);
         webView.getSettings().setDomStorageEnabled(true);
         webView.getSettings().setDatabaseEnabled(true);
-        webView.getSettings().setCacheMode(WebSettings.LOAD_DEFAULT);
+        webView.getSettings().setCacheMode(WebSettings.LOAD_NO_CACHE);
         webView.getSettings().setMediaPlaybackRequiresUserGesture(true);
         webView.getSettings().setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
         webView.getSettings().setSupportMultipleWindows(true);
