@@ -64,10 +64,15 @@
                 'access_status': 'status',
                 'contact_phone': 'phone',
                 'parent_name': 'parentName',
+                'total_fee': 'totalFee',
                 'total_fee_inr': 'totalFee',
+                'paid_fee': 'paidFee',
                 'paid_fee_inr': 'paidFee',
+                'monthly_fee': 'monthlyFee',
                 'monthly_fee_inr': 'monthlyFee',
+                'due_date': 'dueDate',
                 'fee_due_date': 'dueDate',
+                'last_reminder': 'lastReminder',
                 'last_reminder_sent': 'lastReminder',
                 'admission_date': 'admissionDate',
                 'batch_id': 'batchId',
@@ -327,7 +332,8 @@
             out.dueDate = out.dueDate || row.fee_due_date || row.due_date || 'Fully Paid';
             out.lastReminder = out.lastReminder || row.last_reminder_sent || row.last_reminder || '-';
             out.admissionDate = out.admissionDate || row.admission_date || '';
-            out.batchId = out.batchId || (['DC-101','DC-102','DC-103','DC-104','DC-105'].includes(out.roll) ? 'b1' : (['DC-106','DC-107','DC-108'].includes(out.roll) ? 'b2' : 'b3'));
+            out.batchId = out.batchId || row.batch_id || (['DC-101','DC-102','DC-103','DC-104','DC-105'].includes(out.roll) ? 'b1' : (['DC-106','DC-107','DC-108'].includes(out.roll) ? 'b2' : 'b3'));
+            out.photo = out.photo || row.photo || row.profile_photo || '';
         }
         if (tableConfig.stateKey === 'teachers') {
             out.id = out.id || row.teacher_id || row.id || '';
@@ -368,6 +374,33 @@
         return out;
     }
 
+    function mergeSupabaseCollectionRows(snapshotRows, tableRows, stateKey) {
+        const merged = snapshotRows.slice();
+        const seen = new Set();
+        const getIdentity = function (record) {
+            if (!record || typeof record !== 'object') return '';
+            if (stateKey === 'students') return String(record.roll || record.id || '');
+            if (stateKey === 'attendanceRecords') {
+                const composite = [record.date, record.batchId || record.batch_id, record.studentId || record.student_id]
+                    .map(function (value) { return String(value || '').trim(); });
+                if (composite.every(Boolean)) return composite.join('|');
+            }
+            return record.id == null ? '' : String(record.id);
+        };
+        merged.forEach(function (record) {
+            const identity = getIdentity(record);
+            if (identity) seen.add(identity);
+        });
+        tableRows.forEach(function (record) {
+            const identity = getIdentity(record);
+            const fallbackIdentity = identity || JSON.stringify(record);
+            if (seen.has(fallbackIdentity)) return;
+            seen.add(fallbackIdentity);
+            merged.push(record);
+        });
+        return merged;
+    }
+
     function supabaseSafeSnapshot(data) {
         const snapshot = JSON.parse(JSON.stringify(data || {}));
         if (snapshot.settings) {
@@ -400,7 +433,9 @@
         const savedSettings = snapshotRows[0] && snapshotRows[0].payload && snapshotRows[0].payload.settings;
         const savedClearEpoch = String(savedSettings && savedSettings._applicationDataClearEpoch || '');
         const localClearEpoch = String(state.settings && state.settings._applicationDataClearEpoch || '');
-        if (savedClearEpoch && savedClearEpoch !== localClearEpoch) {
+        if (state.settings && (state.settings.showDummyData === true || state.settings.showDummyData === 'On') && !state.settings.dummyDataWiped) {
+            // Active demo data in local state must not be wiped by a stale remote snapshot
+        } else if (savedClearEpoch && savedClearEpoch !== localClearEpoch) {
             const savedPayload = snapshotRows[0].payload;
             if (typeof crossDeviceApplyRemotePayload === 'function') {
                 crossDeviceApplyRemotePayload(savedPayload);
@@ -411,8 +446,7 @@
             }
             localStorage.removeItem(PENDING_SYNC_KEY);
             return { synced: false, reason: 'application-data-was-cleared' };
-        }
-        if (savedSettings && (savedSettings.dummyDataWiped === true || savedSettings.dummyDataWiped === 'true')) {
+        } else if (savedSettings && (savedSettings.dummyDataWiped === true || savedSettings.dummyDataWiped === 'true')) {
             if (!state.settings) state.settings = {};
             state.settings.dummyDataWiped = true;
             state.settings.showDummyData = false;
@@ -760,11 +794,18 @@
     }
 
     async function loadDataFromSupabase() {
-        if (!state.settings || state.settings.supabaseEnabled !== true) return;
+        if (!state.settings) state.settings = {};
+        if (state.settings.supabaseEnabled !== false) {
+            state.settings.supabaseEnabled = true;
+            if (!state.settings.supabaseUrl) state.settings.supabaseUrl = 'https://srjqsofkjizwskqnzyfn.supabase.co';
+            if (!state.settings.supabaseKey) state.settings.supabaseKey = 'sb_publishable_vxonFVKPpyJjY5O-Y9mS6g_bhSYCcsS';
+        }
+        if (state.settings.supabaseEnabled !== true) return;
 
         const loadedData = {};
         const loadErrors = [];
         const emptyTables = [];
+        let loadedSnapshot = false;
         for (const tableName of Object.keys(SUPABASE_TABLE_MAP)) {
             try {
                 const config = SUPABASE_TABLE_MAP[tableName];
@@ -786,6 +827,7 @@
                 }
             } catch (e) {
                 console.warn('Could not load ' + tableName + ' from Supabase (skipping):', e);
+                loadErrors.push(tableName + ': ' + ((e && e.message) || String(e)));
             }
         }
 
@@ -881,17 +923,61 @@
             console.warn('Failed to load settings from Supabase:', e);
         }
 
+        try {
+            const snapshotResponse = await supabaseFetch('db_json?snapshot_key=eq.main&select=payload');
+            if (snapshotResponse.ok) {
+                const snapshotRows = await snapshotResponse.json();
+                const snapshot = snapshotRows[0] && snapshotRows[0].payload;
+                if (snapshot && typeof snapshot === 'object') {
+                    // Keep snapshot details, but add table rows missing from a stale/partial snapshot.
+                    [
+                        'batches', 'students', 'teachers', 'materials', 'offlineTests',
+                        'gallery', 'externalLinks', 'feedbacks', 'notifications', 'attendanceRecords'
+                    ].forEach(function (key) {
+                        if (!Array.isArray(snapshot[key])) return;
+                        const tableRows = Array.isArray(loadedData[key]) ? loadedData[key] : [];
+                        loadedData[key] = tableRows.length
+                            ? mergeSupabaseCollectionRows(snapshot[key], tableRows, key)
+                            : snapshot[key];
+                    });
+                    if (snapshot.settings && typeof snapshot.settings === 'object') {
+                        const snapSettings = Object.assign({}, snapshot.settings);
+                        const hasActiveTableRows = ['students', 'batches', 'teachers'].some(function (k) {
+                            return Array.isArray(loadedData[k]) && loadedData[k].length > 0;
+                        });
+                        if (hasActiveTableRows || (loadedData.settings && loadedData.settings.showDummyData === true)) {
+                            snapSettings.dummyDataWiped = false;
+                            snapSettings.showDummyData = true;
+                        }
+                        loadedData.settings = Object.assign({}, loadedData.settings || {}, snapSettings);
+                    }
+                    loadedSnapshot = true;
+                }
+            } else {
+                console.warn('[Supabase] Could not load the canonical application snapshot (HTTP ' + snapshotResponse.status + ').');
+            }
+        } catch (snapshotError) {
+            console.warn('[Supabase] Could not load the canonical application snapshot:', snapshotError);
+        }
+
         Object.keys(loadedData).forEach(function (key) {
-            // Apply loaded data exactly as it is in Supabase, including empty
-            // arrays (e.g. batches: [] → "0 Batches" when the DB table is empty).
+            // Empty arrays still apply when the corresponding dedicated table is empty.
             if (loadedData[key] !== undefined && loadedData[key] !== null) {
                 state[key] = loadedData[key];
             }
         });
-        if (!emptyTables.includes('batches') && !emptyTables.includes('students')) {
+
+        // If core tables contain data from Supabase, ensure demo data is visible
+        if (state.settings && ['students', 'batches', 'teachers'].some(function (k) {
+            return Array.isArray(state[k]) && state[k].length > 0;
+        })) {
+            state.settings.showDummyData = true;
+            state.settings.dummyDataWiped = false;
+        }
+        if (loadedSnapshot || (!emptyTables.includes('batches') && !emptyTables.includes('students'))) {
             rememberSupabaseSyncSnapshot();
         }
-        return { emptyTables: emptyTables };
+        return { emptyTables: emptyTables, loadErrors: loadErrors };
     }
 
     async function refreshSupabaseTables() {
@@ -921,8 +1007,7 @@
                 });
                 if (JSON.stringify(beforeObj.settings || {}) !== JSON.stringify(state.settings || {})) changedKeys.push('settings');
 
-                const isAndroidApp = document.documentElement.classList.contains('android-app');
-                if (!isAndroidApp && canBackgroundRerenderMainContent(changedKeys)) {
+                if (canBackgroundRerenderMainContent(changedKeys)) {
                     if (typeof updateRoleUI === 'function') updateRoleUI();
                     if (typeof renderSidebar === 'function') renderSidebar();
                     if (typeof renderMainContentPreservingScroll === 'function') {

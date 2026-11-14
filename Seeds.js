@@ -394,18 +394,8 @@ function getDefaultSeedData() {
     }
   };
 
-  // Keep six demo rows per app data table; protected study links retain their curated set.
-  for (let i = 4; i <= 6; i++) {
-    data.batches.push({
-      id: 'b' + i,
-      name: 'Demo Batch ' + String(i).padStart(2, '0'),
-      subject: ['Physics', 'Chemistry', 'Mathematics'][i % 3],
-      schedule: 'Demo schedule — Mon, Wed, Fri • 10:00 AM - 11:00 AM',
-      room: 'Demo Classroom ' + String(i).padStart(2, '0'),
-      teacher: 'Demo Faculty ' + String(i).padStart(2, '0'),
-      studentIds: [['s1', 's2', 's5'][i - 4]]
-    });
-  }
+  // Protected institute batches (b1 to b3) retain their authentic records; do not create b4, b5, b6.
+
 
   for (let i = 6; i <= 6; i++) {
     data.materials.push({
@@ -472,34 +462,18 @@ function getDefaultSeedData() {
     });
   }
 
+  const demoBatchNames = ['JEE Advanced Target 2027 (Alpha Batch)', 'NEET Medical Dropper & Foundation (Bio-Elite)', 'Class 10th CBSE Board Excellence & NTSE'];
   for (let i = 4; i <= 6; i++) {
     const n = String(i).padStart(2, '0');
     data.feedbacks.push({
       id: 'f' + i,
       authorName: 'Demo Respondent ' + n,
       role: i % 2 ? 'Student' : 'Parent',
-      batchName: 'Demo Batch ' + n,
+      batchName: demoBatchNames[i - 4] || 'Class 10th CBSE Board Excellence & NTSE',
       category: 'Demo Feedback',
       rating: 5,
       date: '30 Oct 2026',
       comment: '[DEMO] Placeholder feedback record for testing only; not a real testimonial.'
-    });
-  }
-
-  for (let i = 6; i <= 10; i++) {
-    const n = String(i).padStart(2, '0');
-    data.externalLinks.push({
-      id: 'l' + i,
-      title: '[DEMO] Sample External Resource ' + n,
-      provider: 'Demo Provider',
-      subject: 'Sample Study Resource',
-      url: 'https://example.com/demo/resource-' + n,
-      driveUrl: '',
-      description: 'Placeholder link for testing the External Links Hub. This is not a real study resource.',
-      dateAdded: '30 Oct 2026',
-      icon: 'fa-globe',
-      color: 'bg-slate-600',
-      isDummy: true
     });
   }
 
@@ -680,7 +654,7 @@ function ensureAttendanceDummySeeds_(sheet) {
         record.studentId,
         record.status,
         record.markedBy,
-        record.updatedAt
+        attendanceTimestampForSheet_(record.updatedAt)
       ]]);
       return;
     }
@@ -691,7 +665,7 @@ function ensureAttendanceDummySeeds_(sheet) {
       record.studentId,
       record.status,
       record.markedBy,
-      record.updatedAt
+      attendanceTimestampForSheet_(record.updatedAt)
     ]);
     seen[key] = true;
   });
@@ -712,7 +686,7 @@ function mergeDefaultDummySeeds_(appData) {
   const seed = getDefaultSeedData();
   const blockedRolls = typeof getTombstones_ === 'function' ? getTombstones_('rolls') : [];
   const blockedUrls = typeof getTombstones_ === 'function' ? getTombstones_('linkUrls') : [];
-  const tables = ['batches', 'students', 'materials', 'offlineTests', 'teachers', 'gallery', 'feedbacks', 'externalLinks'];
+  const tables = ['batches', 'students', 'materials', 'offlineTests', 'teachers', 'gallery', 'feedbacks'];
 
   tables.forEach(function (table) {
     if (!Array.isArray(appData[table])) appData[table] = [];
@@ -724,13 +698,22 @@ function mergeDefaultDummySeeds_(appData) {
     (seed[table] || []).forEach(function (record) {
       if (!record || !record.id || have[String(record.id)]) return;
       if (table === 'students' && blockedRolls.indexOf(String(record.roll || '').trim()) !== -1) return;
-      if (table === 'externalLinks' && blockedUrls.indexOf(String(record.url || '').trim()) !== -1) return;
       const sample = JSON.parse(JSON.stringify(record));
       sample.isDummy = true;
       appData[table].push(sample);
       have[String(record.id)] = true;
     });
   });
+
+  // Ensure external links strictly contain only the 5 official resources (l1 to l5)
+  if (!Array.isArray(appData.externalLinks) || !appData.externalLinks.length) {
+    appData.externalLinks = JSON.parse(JSON.stringify(seed.externalLinks || []));
+  } else {
+    // Strip any accidental demo links beyond l1-l5
+    appData.externalLinks = appData.externalLinks.filter(function (l) {
+      return l && !String(l.title || '').startsWith('[DEMO]') && !['l6', 'l7', 'l8', 'l9', 'l10'].includes(String(l.id || '').trim());
+    });
+  }
 
   if (!Array.isArray(appData.notifications)) appData.notifications = [];
   const notificationIds = {};

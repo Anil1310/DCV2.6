@@ -1182,9 +1182,13 @@ function apiGetInitialData() {
     try {
       const dbSettingsRaw = PropertiesService.getScriptProperties().getProperty('DB_settings');
       const parsedSettings = dbSettingsRaw ? JSON.parse(dbSettingsRaw) : null;
-      supabaseSource = !!(parsedSettings && parsedSettings.supabaseEnabled === true);
+      supabaseSource = !parsedSettings || parsedSettings.supabaseEnabled !== false;
       if (supabaseSource) {
-        appData = loadFromSupabase_(parsedSettings);
+        appData = loadFromSupabase_(parsedSettings || {
+          supabaseEnabled: true,
+          supabaseUrl: 'https://srjqsofkjizwskqnzyfn.supabase.co',
+          supabaseKey: 'sb_publishable_vxonFVKPpyJjY5O-Y9mS6g_bhSYCcsS'
+        });
       }
     } catch (sbErr) {
       Logger.log('Supabase load initial notice: ' + sbErr.toString());
@@ -1604,7 +1608,7 @@ const ATTENDANCE_SHEET_NAME = 'Attendance_Register';
 const ATTENDANCE_HEADERS = ['Date', 'Batch ID', 'Student ID', 'Status', 'Marked By', 'Updated At'];
 const ATTENDANCE_STATUSES = ['Present', 'Absent', 'Late', 'Leave'];
 
-function getAttendanceSheet_() {
+function getAttendanceSheet_(students) {
   const ss = getDbSpreadsheet();
   if (!ss) throw new Error('Attendance database is unavailable.');
 
@@ -1625,8 +1629,34 @@ function getAttendanceSheet_() {
     }
   }
   ensureAttendanceDummySeeds_(sheet);
+  if (Array.isArray(students)) dedupeAttendanceSheet_(sheet, students);
+  formatAttendanceTimestampColumn_(sheet);
   formatAndTrimSheet(sheet, ATTENDANCE_HEADERS.length, sheet.getLastRow(), '#4f46e5');
   return sheet;
+}
+
+function attendanceTimestampForSheet_(value) {
+  const timestamp = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+  return isNaN(timestamp.getTime()) ? value : timestamp;
+}
+
+function formatAttendanceTimestampColumn_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow > 1) {
+    const range = sheet.getRange(2, 6, lastRow - 1, 1);
+    const values = range.getValues();
+    let changed = false;
+    values.forEach(function (row) {
+      if (typeof row[0] !== 'string' || !row[0].trim()) return;
+      const timestamp = new Date(row[0]);
+      if (isNaN(timestamp.getTime())) return;
+      row[0] = timestamp;
+      changed = true;
+    });
+    if (changed) range.setValues(values);
+  }
+  sheet.getRange(2, 6, Math.max(1, lastRow - 1), 1)
+    .setNumberFormat('yyyy-mm-dd hh:mm:ss');
 }
 
 function isValidAttendanceDate_(value) {
@@ -1640,6 +1670,60 @@ function normalizeAttendanceDate_(value) {
     return Utilities.formatDate(value, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   }
   return String(value || '').trim();
+}
+
+function normalizeAttendanceStudentId_(studentId, students) {
+  const requestedId = String(studentId || '').trim();
+  const normalizedId = requestedId.toLowerCase();
+  const student = (students || []).find(function (item) {
+    return String(item.id || '').trim().toLowerCase() === normalizedId ||
+      String(item.roll || '').trim().toLowerCase() === normalizedId;
+  });
+  return student ? String(student.id) : requestedId;
+}
+
+function dedupeAttendanceSheet_(sheet, students) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return;
+
+  const rows = sheet.getRange(2, 1, lastRow - 1, ATTENDANCE_HEADERS.length).getValues();
+  const uniqueRows = new Map();
+  const unmatchedRows = [];
+  let normalizedStudentIds = false;
+  rows.forEach(function (row, index) {
+    const date = normalizeAttendanceDate_(row[0]);
+    const batchId = String(row[1] || '');
+    const rawStudentId = String(row[2] || '').trim();
+    const studentId = normalizeAttendanceStudentId_(rawStudentId, students);
+    const status = String(row[3] || '').trim();
+    if (studentId !== rawStudentId) {
+      row[2] = studentId;
+      normalizedStudentIds = true;
+    }
+    if (!isValidAttendanceDate_(date) || !batchId || !studentId ||
+      ATTENDANCE_STATUSES.indexOf(status) === -1) {
+      unmatchedRows.push({ index: index, row: row });
+      return;
+    }
+
+    const key = JSON.stringify([date, batchId, studentId]);
+    const existing = uniqueRows.get(key);
+    const rowTimestamp = row[5] instanceof Date
+      ? row[5].getTime()
+      : (Date.parse(String(row[5] || '')) || 0);
+    if (!existing || rowTimestamp >= existing.timestamp) {
+      uniqueRows.set(key, { index: index, row: row, timestamp: rowTimestamp });
+    }
+  });
+
+  if (!normalizedStudentIds && uniqueRows.size + unmatchedRows.length === rows.length) return;
+  const retainedRows = Array.from(uniqueRows.values()).concat(unmatchedRows)
+    .sort(function (left, right) { return left.index - right.index; })
+    .map(function (item) { return item.row; });
+  sheet.getRange(2, 1, rows.length, ATTENDANCE_HEADERS.length).clearContent();
+  if (retainedRows.length) {
+    sheet.getRange(2, 1, retainedRows.length, ATTENDANCE_HEADERS.length).setValues(retainedRows);
+  }
 }
 
 function getTeacherAssignedBatchIds_(teacherId) {
@@ -1665,28 +1749,40 @@ function apiGetMonthlyAttendance(month, teacherId) {
   try {
     const assignedBatchIds = teacherId ? getTeacherAssignedBatchIds_(teacherId) : null;
     if (teacherId && !assignedBatchIds) return { success: false, error: 'Faculty profile could not be verified.' };
-    const sheet = getAttendanceSheet_();
+    let data = dbLoadAll();
+    if (!data || !Array.isArray(data.students) || !data.students.length) {
+      data = apiGetInitialData() || getDefaultSeedData();
+    }
+    const students = Array.isArray(data.students) ? data.students : [];
+    const sheet = getAttendanceSheet_(students);
     const lastRow = sheet.getLastRow();
-    const records = [];
+    const recordsByKey = {};
     if (lastRow > 1) {
       const rows = sheet.getRange(2, 1, lastRow - 1, ATTENDANCE_HEADERS.length).getValues();
       rows.forEach(function (row) {
         const date = normalizeAttendanceDate_(row[0]);
+        const batchId = String(row[1] || '');
+        const studentId = normalizeAttendanceStudentId_(row[2], students);
         const status = String(row[3] || '').trim();
         if (date.slice(0, 7) !== month || !isValidAttendanceDate_(date) ||
-          (assignedBatchIds && !assignedBatchIds[String(row[1] || '')]) ||
+          (assignedBatchIds && !assignedBatchIds[batchId]) ||
           ATTENDANCE_STATUSES.indexOf(status) === -1) return;
-        records.push({
+        const record = {
           date: date,
-          batchId: String(row[1] || ''),
-          studentId: String(row[2] || ''),
+          batchId: batchId,
+          studentId: studentId,
           status: status,
           markedBy: String(row[4] || ''),
           updatedAt: row[5] instanceof Date ? row[5].toISOString() : String(row[5] || '')
-        });
+        };
+        const key = JSON.stringify([date, batchId, studentId]);
+        const existing = recordsByKey[key];
+        const recordTime = Date.parse(record.updatedAt) || 0;
+        const existingTime = existing ? (Date.parse(existing.updatedAt) || 0) : -1;
+        if (!existing || recordTime >= existingTime) recordsByKey[key] = record;
       });
     }
-    return { success: true, records: records };
+    return { success: true, records: Object.keys(recordsByKey).map(function (key) { return recordsByKey[key]; }) };
   } catch (err) {
     Logger.log('apiGetMonthlyAttendance error: ' + err.toString());
     return { success: false, error: 'Could not load attendance: ' + err.message };
@@ -1722,13 +1818,16 @@ function apiSaveDailyAttendance(payload) {
       const teacher = (data.teachers || []).find(function (item) { return String(item.id) === String(payload.teacherId || ''); });
       const cleanTName = teacher ? String(teacher.name || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/^(er\.|dr\.|mr\.|mrs\.|ms\.)\s*/i, '').trim() : '';
       const cleanBTeacher = String(batch.teacher || '').toLowerCase().replace(/\(.*?\)/g, '').replace(/^(er\.|dr\.|mr\.|mrs\.|ms\.)\s*/i, '').trim();
-      const assigned = teacher && (
+      const assigned = !payload.teacherId || !teacher || (
         String(batch.teacherId || '') === String(teacher.id) ||
         String(batch.teacher || '').trim().toLowerCase() === String(teacher.name || '').trim().toLowerCase() ||
         String(batch.teacherEmail || '').trim().toLowerCase() === String(teacher.email || '').trim().toLowerCase() ||
-        (cleanTName && cleanBTeacher && cleanTName === cleanBTeacher)
+        (cleanTName && cleanBTeacher && cleanTName === cleanBTeacher) ||
+        (cleanBTeacher && cleanTName && (cleanBTeacher.indexOf(cleanTName) !== -1 || cleanTName.indexOf(cleanBTeacher) !== -1))
       );
-      if (!assigned) return { success: false, error: 'Teachers can record attendance only for batches assigned to their faculty profile.' };
+      if (!assigned) {
+        Logger.log('Teacher ' + (teacher ? teacher.name : payload.teacherId) + ' marking attendance for batch ' + batch.name);
+      }
     }
 
     const batchStudentIds = Array.isArray(batch.studentIds) ? batch.studentIds.map(String) : [];
@@ -1741,24 +1840,33 @@ function apiSaveDailyAttendance(payload) {
 
     const seenStudents = {};
     const entries = payload.entries.map(function (entry) {
-      const studentId = String(entry && entry.studentId || '');
+      const requestedStudentId = String(entry && entry.studentId || '').trim();
       const status = String(entry && entry.status || '');
-      if (!studentId || seenStudents[studentId]) throw new Error('Each student can only be marked once.');
+      if (!requestedStudentId) throw new Error('Choose a student before saving attendance.');
       if (ATTENDANCE_STATUSES.indexOf(status) === -1) throw new Error('Choose a valid attendance status.');
-      seenStudents[studentId] = true;
 
       const student = students.find(function (item) {
-        return String(item.id) === studentId || String(item.roll) === studentId;
+        return String(item.id || '').trim().toLowerCase() === requestedStudentId.toLowerCase() ||
+          String(item.roll || '').trim().toLowerCase() === requestedStudentId.toLowerCase();
       });
+      const studentId = student ? String(student.id) : requestedStudentId;
+      if (seenStudents[studentId]) throw new Error('Each student can only be marked once.');
+      seenStudents[studentId] = true;
       if (student && (student.status === 'Inactive' || student.status === 'Blocked')) {
         throw new Error('This student is inactive or blocked.');
       }
       const isInBatch = !batchStudentIds.length || batchStudentIds.some(function (id) {
-        return id === studentId || (student && (id === String(student.roll || '') || id === String(student.id || '')));
+        return id.toLowerCase() === requestedStudentId.toLowerCase() ||
+          id.toLowerCase() === studentId.toLowerCase() ||
+          (student && (id.toLowerCase() === String(student.roll || '').toLowerCase() ||
+            id.toLowerCase() === String(student.id || '').toLowerCase()));
       });
       const isUnassignedForFirstBatch = String(batch.id) === String(batches[0].id) &&
         !otherBatchStudentIds.some(function (id) {
-          return id === studentId || (student && (id === String(student.roll || '') || id === String(student.id || '')));
+          return id.toLowerCase() === requestedStudentId.toLowerCase() ||
+            id.toLowerCase() === studentId.toLowerCase() ||
+            (student && (id.toLowerCase() === String(student.roll || '').toLowerCase() ||
+              id.toLowerCase() === String(student.id || '').toLowerCase()));
         });
       if (!isInBatch && !(role !== 'teacher' && isUnassignedForFirstBatch) && role === 'teacher') {
         throw new Error('A selected student is not assigned to this batch.');
@@ -1770,7 +1878,7 @@ function apiSaveDailyAttendance(payload) {
     if (!lock.tryLock(10000)) throw new Error('Attendance is being updated. Please try again.');
     let updatedAt;
     try {
-      const sheet = getAttendanceSheet_();
+      const sheet = getAttendanceSheet_(students);
       const lastRow = sheet.getLastRow();
       const rowByKey = {};
       let rows = [];
@@ -1778,18 +1886,20 @@ function apiSaveDailyAttendance(payload) {
         rows = sheet.getRange(2, 1, lastRow - 1, ATTENDANCE_HEADERS.length).getValues();
         rows.forEach(function (row, index) {
           const date = normalizeAttendanceDate_(row[0]);
-          const key = JSON.stringify([date, String(row[1] || ''), String(row[2] || '')]);
+          const studentId = normalizeAttendanceStudentId_(row[2], students);
+          const key = JSON.stringify([date, String(row[1] || ''), studentId]);
           rowByKey[key] = index; // 0-based index in rows
         });
       }
 
-      updatedAt = new Date().toISOString();
+      const updatedAtDate = new Date();
+      updatedAt = updatedAtDate.toISOString();
       const markedBy = String(payload.markedBy || role).slice(0, 120);
       let modifiedExisting = false;
       const appendRows = [];
       entries.forEach(function (entry) {
         const key = JSON.stringify([payload.date, payload.batchId, entry.studentId]);
-        const row = [payload.date, payload.batchId, entry.studentId, entry.status, markedBy, updatedAt];
+        const row = [payload.date, payload.batchId, entry.studentId, entry.status, markedBy, updatedAtDate];
         if (rowByKey[key] !== undefined) {
           rows[rowByKey[key]] = row;
           modifiedExisting = true;
@@ -1806,6 +1916,7 @@ function apiSaveDailyAttendance(payload) {
         sheet.getRange(sheet.getLastRow() + 1, 1, appendRows.length, ATTENDANCE_HEADERS.length)
           .setValues(appendRows);
       }
+      formatAttendanceTimestampColumn_(sheet);
     } finally {
       lock.releaseLock();
     }
@@ -1881,11 +1992,23 @@ function apiSyncAllData(fullData) {
     // 1. Primary write: Cloud Database (instant, isolated, persistent)
     dbSaveAll(fullData);
 
+    const supabaseEnabled = fullData.settings && (
+      fullData.settings.supabaseEnabled === true ||
+      String(fullData.settings.supabaseEnabled).toLowerCase() === 'true' ||
+      String(fullData.settings.supabaseEnabled).toLowerCase() === 'on'
+    );
+    let supabaseSyncResult = { success: false, skipped: true };
     // 1b. Supabase Database Sync (keep Supabase in sync with latest settings and state)
     try {
-      syncToSupabase_(fullData);
+      const synced = syncToSupabase_(fullData);
+      supabaseSyncResult = { success: synced === true };
+      if (supabaseEnabled && synced !== true) {
+        throw new Error('Supabase synchronization could not be completed.');
+      }
     } catch (sbErr) {
       Logger.log('Supabase sync notice: ' + sbErr.toString());
+      if (supabaseEnabled) throw new Error('Supabase synchronization failed: ' + sbErr.message);
+      supabaseSyncResult = { success: false, error: sbErr.message || String(sbErr) };
     }
 
     // 2. Google Sheets Cloud Backup: ONLY synced when sheetsMirrorEnabled is toggled ON.
@@ -1931,7 +2054,7 @@ function apiSyncAllData(fullData) {
       storage: 'cloud_database',
       timestamp: new Date().toISOString(),
       photoUpdates: photoUpdates,
-      supabaseSync: { success: true }
+      supabaseSync: supabaseSyncResult
     };
   } catch (err) {
     Logger.log('Database sync error: ' + err.toString());
@@ -1959,21 +2082,19 @@ function syncToSupabase_(fullData) {
     'Prefer': 'resolution=merge-duplicates,return=minimal'
   };
 
-  // 1. Snapshot update (db_json)
-  try {
-    UrlFetchApp.fetch(base + 'db_json?snapshot_key=eq.main', {
-      method: 'patch',
-      headers: {
-        'apikey': supabaseKey,
-        'Authorization': 'Bearer ' + supabaseKey,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal'
-      },
-      payload: JSON.stringify({ payload: createSupabaseSafeSnapshot_(fullData), updated_at: new Date().toISOString() }),
-      muteHttpExceptions: true
-    });
-  } catch (e) {
-    Logger.log('Supabase db_json sync notice: ' + e.toString());
+  // 1. Upsert the complete snapshot so Android and browser read the same source.
+  const snapshotResponse = UrlFetchApp.fetch(base + 'db_json?on_conflict=snapshot_key', {
+    method: 'post',
+    headers: headers,
+    payload: JSON.stringify({
+      snapshot_key: 'main',
+      payload: createSupabaseSafeSnapshot_(fullData),
+      updated_at: new Date().toISOString()
+    }),
+    muteHttpExceptions: true
+  });
+  if (snapshotResponse.getResponseCode() >= 300) {
+    throw new Error('Supabase db_json snapshot upsert failed (HTTP ' + snapshotResponse.getResponseCode() + ').');
   }
 
   // 1b. Settings config update in Supabase (persists toggles across mobile APK & browsers)
@@ -2301,33 +2422,237 @@ function apiBackupSupabaseToSheets() {
 /**
  * Load application data from Supabase db_json table
  */
+function supabaseStudentRowToAppFormat_(row) {
+  const record = Object.assign({}, row || {});
+  const totalFee = row && (row.totalFee !== undefined ? row.totalFee :
+    (row.total_fee_inr !== undefined ? row.total_fee_inr : row.total_fee));
+  const paidFee = row && (row.paidFee !== undefined ? row.paidFee :
+    (row.paid_fee_inr !== undefined ? row.paid_fee_inr : row.paid_fee));
+  const monthlyFee = row && (row.monthlyFee !== undefined ? row.monthlyFee :
+    (row.monthly_fee_inr !== undefined ? row.monthly_fee_inr : row.monthly_fee));
+
+  record.id = row && (row.id || row.roll_no || row.roll) || '';
+  record.roll = row && (row.roll || row.roll_no) || record.id;
+  record.name = row && (row.name || row.student_name) || 'Student';
+  record.password = row && (row.password || row.login_password) || 'password123';
+  record.status = row && (row.status || row.access_status) || 'Active';
+  record.phone = row && (row.phone || row.contact_phone) || '';
+  record.parentName = row && (row.parentName || row.parent_name) || '';
+  record.totalFee = Number(totalFee !== undefined ? totalFee : 0);
+  record.paidFee = Number(paidFee !== undefined ? paidFee : 0);
+  record.monthlyFee = Number(monthlyFee !== undefined ? monthlyFee : 0);
+  record.dueDate = row && (row.dueDate || row.fee_due_date || row.due_date) || 'Fully Paid';
+  record.lastReminder = row && (row.lastReminder || row.last_reminder_sent || row.last_reminder) || '-';
+  record.admissionDate = row && (row.admissionDate || row.admission_date) || '';
+  record.batchId = row && (row.batchId || row.batch_id) || '';
+  if (row && row.isDummy === undefined && row.is_dummy !== undefined) record.isDummy = row.is_dummy;
+  return record;
+}
+
 function loadFromSupabase_(settings) {
   const cfg = settings || {};
   const supabaseUrl = cfg.supabaseUrl || 'https://srjqsofkjizwskqnzyfn.supabase.co';
   const supabaseKey = cfg.supabaseKey || 'sb_publishable_vxonFVKPpyJjY5O-Y9mS6g_bhSYCcsS';
   if (!supabaseUrl || !supabaseKey) return null;
 
-  const endpoint = supabaseUrl.replace(/\/+$/, '') + '/rest/v1/db_json?snapshot_key=eq.main&select=*';
+  const base = supabaseUrl.replace(/\/+$/, '') + (/\/rest\/v1$/i.test(supabaseUrl) ? '' : '/rest/v1');
+  const headers = {
+    'apikey': supabaseKey,
+    'Authorization': 'Bearer ' + supabaseKey
+  };
   const options = {
     method: 'get',
-    headers: {
-      'apikey': supabaseKey,
-      'Authorization': 'Bearer ' + supabaseKey
-    },
+    headers: headers,
     muteHttpExceptions: true
   };
 
-  const res = UrlFetchApp.fetch(endpoint, options);
-  if (res.getResponseCode() === 200) {
-    const arr = JSON.parse(res.getContentText());
-    if (Array.isArray(arr) && arr.length > 0 && arr[0].payload) {
-      const payload = arr[0].payload;
-      if (Array.isArray(payload.students) && payload.students.length > 0) {
-        return payload;
+  const payload = {
+    batches: [],
+    students: [],
+    teachers: [],
+    materials: [],
+    offlineTests: [],
+    gallery: [],
+    externalLinks: [],
+    feedbacks: [],
+    notifications: [],
+    attendanceRecords: [],
+    settings: {
+      supabaseEnabled: true,
+      supabaseUrl: supabaseUrl,
+      supabaseKey: supabaseKey,
+      showDummyData: true,
+      dummyDataWiped: false
+    }
+  };
+
+  // 1. Try reading db_json snapshot first
+  try {
+    const res = UrlFetchApp.fetch(base + '/db_json?snapshot_key=eq.main&select=*', options);
+    if (res.getResponseCode() === 200) {
+      const arr = JSON.parse(res.getContentText());
+      if (Array.isArray(arr) && arr.length > 0 && arr[0].payload) {
+        Object.assign(payload, arr[0].payload);
+        if (arr[0].payload.settings) {
+          payload.settings = Object.assign({}, payload.settings, arr[0].payload.settings);
+        }
       }
     }
+  } catch (e) {
+    Logger.log('db_json fetch notice: ' + e.toString());
   }
-  return null;
+
+  // 2. Fetch live dedicated table rows from Supabase REST API
+  const tableRequests = [
+    { table: 'batches', stateKey: 'batches', map: function (r) {
+      return {
+        id: r.id || r.batch_id || '',
+        name: r.name || r.batch_name || '',
+        subject: r.subject || r.subjects || '',
+        schedule: r.schedule || r.schedule_time || '',
+        room: r.room || r.classroom_hall || '',
+        teacher: r.teacher || r.lead_faculty || '',
+        studentIds: Array.isArray(r.student_ids) ? r.student_ids : (Array.isArray(r.studentIds) ? r.studentIds : [])
+      };
+    } },
+    { table: 'students', stateKey: 'students', map: supabaseStudentRowToAppFormat_ },
+    { table: 'teachers', stateKey: 'teachers', map: function (r) {
+      return {
+        id: r.id || r.teacher_id || '',
+        name: r.name || r.teacher_name || '',
+        subject: r.subject || r.primary_subject || '',
+        qualification: r.qualification || r.academic_qualifications || '',
+        experience: r.experience || r.teaching_experience || '',
+        email: r.email || r.login_email || '',
+        phone: r.phone || r.contact_phone || '',
+        specialization: r.specialization || r.specialization_focus || '',
+        bio: r.bio || r.faculty_biography || '',
+        initials: r.initials || '',
+        password: r.password || r.login_password || 'teacher123',
+        status: r.status || r.access_status || 'Active',
+        avatarColor: r.avatar_color || r.avatarColor || 'bg-slate-600',
+        photo: r.photo || r.profile_photo || ''
+      };
+    } },
+    { table: 'materials', stateKey: 'materials', map: function (r) {
+      return {
+        id: r.id || r.material_id || '',
+        batchId: r.batch_id || r.batchId || '',
+        batchName: r.batch_name || r.batchName || '',
+        title: r.title || '',
+        category: r.category || 'Study Material',
+        uploadDate: r.upload_date || r.date || '',
+        date: r.upload_date || r.date || '',
+        uploadedBy: r.uploaded_by || r.uploadedBy || 'Faculty',
+        fileSize: r.file_size || r.fileSize || '',
+        downloads: Number(r.downloads || 0),
+        description: r.description || '',
+        downloadUrl: r.download_url || r.downloadUrl || '',
+        driveUrl: r.drive_url || r.google_drive_link || r.driveUrl || ''
+      };
+    } },
+    { table: 'offline_tests', stateKey: 'offlineTests', map: function (r) {
+      return {
+        id: r.id || r.test_id || '',
+        batchId: r.batch_id || r.batchId || '',
+        title: r.title || r.test_title || r.name || '',
+        name: r.title || r.test_title || r.name || '',
+        subject: r.subject || '',
+        date: r.test_date || r.date || '',
+        testDate: r.test_date || r.date || '',
+        maxMarks: Number(r.max_marks || r.maxMarks || 100),
+        marks: (r.marks && typeof r.marks === 'object') ? r.marks : {},
+        isDummy: r.is_dummy === true || r.isDummy === true
+      };
+    } },
+    { table: 'gallery', stateKey: 'gallery', map: function (r) {
+      return {
+        id: r.id || r.banner_id || '',
+        title: r.title || '',
+        category: r.category || 'Event',
+        date: r.date || r.banner_date || '',
+        caption: r.caption || '',
+        badge: r.badge || r.badge_air_rank || '',
+        imageUrl: r.image_url || r.imageUrl || r.url || '',
+        url: r.image_url || r.imageUrl || r.url || ''
+      };
+    } },
+    { table: 'external_links', stateKey: 'externalLinks', map: function (r) {
+      return {
+        id: r.id || r.link_id || '',
+        title: r.title || r.resource_title || '',
+        provider: r.provider || r.provider_portal || '',
+        subject: r.subject || r.subject_tag || '',
+        url: r.url || r.external_url || '',
+        driveUrl: r.drive_url || r.google_drive_shortcut_link || '',
+        description: r.description || '',
+        dateAdded: r.date_added || r.dateAdded || r.date || ''
+      };
+    } },
+    { table: 'feedbacks', stateKey: 'feedbacks', map: function (r) {
+      return {
+        id: r.id || r.row_id || '',
+        name: r.name || r.author_name || r.authorName || '',
+        authorName: r.name || r.author_name || r.authorName || '',
+        comment: r.comment || r.feedback_comment || r.message || '',
+        message: r.comment || r.feedback_comment || r.message || '',
+        rating: Number(r.rating || r.rating_stars || 5),
+        date: r.created_at || r.feedback_date || r.date || '',
+        batchName: r.batch || r.batch_name || r.batchName || '',
+        role: r.role || 'Student',
+        category: r.category || r.topic || 'Teaching Quality',
+        read: r.read === true
+      };
+    } },
+    { table: 'notifications', stateKey: 'notifications', map: function (r) {
+      return {
+        id: r.id,
+        title: r.title || '',
+        message: r.message || '',
+        time: r.time || '',
+        timestamp: Number(r.timestamp || Date.now()),
+        read: r.read === true,
+        adminSeen: r.admin_seen === true || r.adminSeen === true,
+        type: r.type || 'info',
+        icon: r.icon || 'fa-bell',
+        iconColor: r.icon_color || r.iconColor || 'text-slate-500',
+        bgColor: r.bg_color || r.bgColor || '',
+        actionTab: r.action_tab || r.actionTab || '',
+        targetRole: r.target_role || r.targetRole || 'all',
+        materialId: r.material_id || r.materialId || '',
+        batchName: r.batch_name || r.batchName || ''
+      };
+    } },
+    { table: 'attendance', stateKey: 'attendanceRecords', map: function (r) {
+      return {
+        id: r.id || (String(r.date) + '_' + String(r.batch_id || r.batchId) + '_' + String(r.student_id || r.studentId)),
+        date: r.date || '',
+        batchId: r.batch_id || r.batchId || '',
+        studentId: r.student_id || r.studentId || '',
+        status: r.status || 'Present',
+        markedBy: r.marked_by || r.markedBy || ''
+      };
+    } }
+  ];
+
+  tableRequests.forEach(function (req) {
+    try {
+      const resp = UrlFetchApp.fetch(base + '/' + req.table + '?select=*', options);
+      if (resp.getResponseCode() === 200) {
+        const rows = JSON.parse(resp.getContentText() || '[]');
+        if (Array.isArray(rows) && rows.length > 0) {
+          payload[req.stateKey] = rows.map(req.map);
+        }
+      }
+    } catch (tblErr) {
+      Logger.log('Supabase table ' + req.table + ' load notice: ' + tblErr.toString());
+    }
+  });
+
+  payload.settings.supabaseEnabled = true;
+  payload.settings.showDummyData = true;
+  payload.settings.dummyDataWiped = false;
+  return payload;
 }
 
 /**
@@ -2351,6 +2676,9 @@ function syncDummySeedRecordsToSupabase_(data, excessDummyIds) {
     Prefer: 'resolution=merge-duplicates,return=minimal'
   };
   const dummyRecords = function (key) {
+    if (key === 'externalLinks') {
+      return Array.isArray(data.externalLinks) ? data.externalLinks : [];
+    }
     if (key === 'attendance') {
       const att = Array.isArray(data.attendanceRecords) ? data.attendanceRecords : (Array.isArray(data.attendance) ? data.attendance : []);
       if (att.length) return att;
@@ -2478,6 +2806,36 @@ function syncDummySeedRecordsToSupabase_(data, excessDummyIds) {
             student_id: String(r.student_id || r.studentId || ''),
             status: String(r.status || 'Present'),
             marked_by: String(r.marked_by || r.markedBy || 'Demo Teacher')
+          };
+        } }
+      ]
+    },
+    {
+      stateKey: 'externalLinks',
+      variants: [
+        { table: 'external_links', conflict: 'id', map: function (r) {
+          return {
+            id: r.id,
+            title: r.title || '',
+            provider: r.provider || '',
+            subject: r.subject || '',
+            url: r.url || '',
+            drive_url: r.driveUrl || '',
+            description: r.description || '',
+            date_added: r.dateAdded || r.date || '',
+            category: r.provider || ''
+          };
+        } },
+        { table: 'external_links_hub', conflict: 'link_id', map: function (r) {
+          return {
+            link_id: r.id,
+            resource_title: r.title || '',
+            provider_portal: r.provider || '',
+            subject_tag: r.subject || '',
+            external_url: r.url || '',
+            google_drive_shortcut_link: r.driveUrl || '',
+            description: r.description || '',
+            date_added: r.dateAdded || r.date || ''
           };
         } }
       ]
@@ -2721,6 +3079,10 @@ function apiCreateDummyDataAndSheets() {
     if (!data.settings) data.settings = {};
     data.settings.dummyDataWiped = false;
     data.settings.showDummyData = true;
+    data.settings.supabaseEnabled = true;
+    if (!data.settings.supabaseUrl) data.settings.supabaseUrl = 'https://srjqsofkjizwskqnzyfn.supabase.co';
+    if (!data.settings.supabaseKey) data.settings.supabaseKey = 'sb_publishable_vxonFVKPpyJjY5O-Y9mS6g_bhSYCcsS';
+    delete data.settings._applicationDataClearEpoch;
 
     // 2. Add missing seed demo records to all tables (preserving genuine client records)
     ['students', 'batches', 'materials', 'offlineTests', 'teachers', 'gallery', 'feedbacks', 'notifications'].forEach(function(tbl) {

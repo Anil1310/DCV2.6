@@ -183,7 +183,9 @@ BEGIN
 END
 $rls$;
 
--- 2. Seed permanent External Links (5 curated education portals)
+-- 2. Seed permanent External Links (strictly 5 curated education portals only)
+DELETE FROM public.external_links WHERE id IN ('l6', 'l7', 'l8', 'l9', 'l10') OR title LIKE '[DEMO] Sample External Resource%';
+DELETE FROM public.batches WHERE id IN ('b4', 'b5', 'b6') OR name LIKE 'Demo Batch 0%';
 INSERT INTO public.external_links (id, title, provider, subject, url, drive_url, description, date_added, category) VALUES
 ('l1', 'DIKSHA / NCERT Official Portal - Free e-Textbooks (Class 1-12)', 'NCERT & Ministry of Education', 'Physics, Chemistry, Maths, Biology', 'https://diksha.gov.in/', '', 'Official national digital repository with authentic chapter-by-chapter NCERT books, exemplars, and interactive study modules.', '', 'NCERT & Ministry of Education'),
 ('l2', 'National Digital Library of India (NDLI)', 'Ministry of Education & IIT Kharagpur', 'JEE / NEET / Olympiad', 'https://www.ndl.gov.in/', '', 'Vast repository of video lectures, solved past question archives, and academic monographs.', '', 'Ministry of Education & IIT Kharagpur'),
@@ -255,10 +257,7 @@ INSERT INTO demo_seed_payloads (table_name, rows) VALUES
 [
   {"id":"b1","name":"JEE Advanced Target 2027 (Alpha Batch)","subject":"Physics, Chemistry & Mathematics","schedule":"Mon - Fri • 08:00 AM - 12:30 PM","room":"Lecture Hall 101 (Smart AC)","teacher":"Er. Rajesh Chahar (Ex-IITian)","student_ids":["s1","s2"]},
   {"id":"b2","name":"NEET Medical Dropper & Foundation (Bio-Elite)","subject":"Botany, Zoology, Physics & Chemistry","schedule":"Mon - Sat • 01:30 PM - 06:00 PM","room":"Medical Hall 202","teacher":"Dr. Sunita Sharma (M.D. AIIMS)","student_ids":["s5","s6"]},
-  {"id":"b3","name":"Class 10th CBSE Board Excellence & NTSE","subject":"Science, Mathematics & Social Science","schedule":"Tue, Thu, Sat • 04:30 PM - 07:00 PM","room":"Classroom 104","teacher":"Mr. Arvind Verma (M.Sc. Gold Medalist)","student_ids":["s8","s9"]},
-  {"id":"b4","name":"Demo Batch 04","subject":"Chemistry","schedule":"Demo schedule — Mon, Wed, Fri • 10:00 AM - 11:00 AM","room":"Demo Classroom 04","teacher":"Demo Faculty 04","student_ids":["s1"]},
-  {"id":"b5","name":"Demo Batch 05","subject":"Mathematics","schedule":"Demo schedule — Mon, Wed, Fri • 10:00 AM - 11:00 AM","room":"Demo Classroom 05","teacher":"Demo Faculty 05","student_ids":["s2"]},
-  {"id":"b6","name":"Demo Batch 06","subject":"Physics","schedule":"Demo schedule — Mon, Wed, Fri • 10:00 AM - 11:00 AM","room":"Demo Classroom 06","teacher":"Demo Faculty 06","student_ids":["s5"]}
+  {"id":"b3","name":"Class 10th CBSE Board Excellence & NTSE","subject":"Science, Mathematics & Social Science","schedule":"Tue, Thu, Sat • 04:30 PM - 07:00 PM","room":"Classroom 104","teacher":"Mr. Arvind Verma (M.Sc. Gold Medalist)","student_ids":["s8","s9"]}
 ]
 $json$::jsonb),
 ('students', $json$
@@ -316,9 +315,9 @@ $json$::jsonb),
   {"id":"f1","name":"Rajesh Sharma (Parent of Aarav Sharma)","message":"Divine Classes has transformed Aarav’s problem-solving approach. Er. Rajesh Chahar sir’s physics lectures and individual doubt attention are exceptional!","rating":5,"created_at":"13 Oct 2026","batch":"JEE Advanced Target 2027 (Alpha Batch)","role":"Parent","category":"Teaching Quality","read":false},
   {"id":"f2","name":"Ananya Singh","message":"The offline test analysis and Dr. Sunita ma’am’s NCERT biology booster worksheets are the main reason my mock test scores jumped from 520 to 660+!","rating":5,"created_at":"10 Oct 2026","batch":"NEET Medical Dropper & Foundation","role":"Student","category":"Study Material","read":false},
   {"id":"f3","name":"Sanjay Gupta (Parent of Rohan Gupta)","message":"Very disciplined institute. Receiving regular offline test marks and updates gives us complete peace of mind about our ward’s exam prep.","rating":5,"created_at":"06 Oct 2026","batch":"JEE Advanced Target 2027 (Alpha Batch)","role":"Parent","category":"Offline Test Series","read":false},
-  {"id":"f4","name":"Demo Respondent 04","message":"[DEMO] Placeholder feedback record for testing only; not a real testimonial.","rating":5,"created_at":"30 Oct 2026","batch":"Demo Batch 04","role":"Parent","category":"Demo Feedback","read":false},
-  {"id":"f5","name":"Demo Respondent 05","message":"[DEMO] Placeholder feedback record for testing only; not a real testimonial.","rating":5,"created_at":"30 Oct 2026","batch":"Demo Batch 05","role":"Student","category":"Demo Feedback","read":false},
-  {"id":"f6","name":"Demo Respondent 06","message":"[DEMO] Placeholder feedback record for testing only; not a real testimonial.","rating":5,"created_at":"30 Oct 2026","batch":"Demo Batch 06","role":"Parent","category":"Demo Feedback","read":false}
+  {"id":"f4","name":"Demo Respondent 04","message":"[DEMO] Placeholder feedback record for testing only; not a real testimonial.","rating":5,"created_at":"30 Oct 2026","batch":"JEE Advanced Target 2027 (Alpha Batch)","role":"Parent","category":"Demo Feedback","read":false},
+  {"id":"f5","name":"Demo Respondent 05","message":"[DEMO] Placeholder feedback record for testing only; not a real testimonial.","rating":5,"created_at":"30 Oct 2026","batch":"NEET Medical Dropper & Foundation (Bio-Elite)","role":"Student","category":"Demo Feedback","read":false},
+  {"id":"f6","name":"Demo Respondent 06","message":"[DEMO] Placeholder feedback record for testing only; not a real testimonial.","rating":5,"created_at":"30 Oct 2026","batch":"Class 10th CBSE Board Excellence & NTSE","role":"Parent","category":"Demo Feedback","read":false}
 ]
 $json$::jsonb),
 ('notifications', $json$
@@ -461,6 +460,167 @@ INSERT INTO public.attendance (id, date, batch_id, student_id, status, marked_by
 ON CONFLICT (id) DO UPDATE
 SET status = EXCLUDED.status,
     marked_by = EXCLUDED.marked_by,
+    updated_at = now();
+
+-- 6. Ensure Settings flags are active for demo data and Supabase
+UPDATE public.settings_config
+SET configured_value = CASE setting_parameter
+    WHEN 'Show Dummy / Demo Data' THEN 'On'
+    WHEN 'Dummy Data Wiped' THEN 'No'
+    WHEN 'Supabase Enabled' THEN 'On'
+END
+WHERE setting_parameter IN ('Show Dummy / Demo Data', 'Dummy Data Wiped', 'Supabase Enabled');
+
+-- 7. Upsert canonical application snapshot into public.db_json
+INSERT INTO public.db_json (snapshot_key, payload, updated_at)
+VALUES (
+    'main',
+    jsonb_build_object(
+        'batches', (SELECT COALESCE(jsonb_agg(to_jsonb(b) - 'student_ids' || jsonb_build_object('studentIds', b.student_ids)), '[]'::jsonb) FROM public.batches b),
+        'students', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'id', s.id,
+            'roll', s.roll,
+            'name', s.name,
+            'phone', s.phone,
+            'parentName', s.parent_name,
+            'totalFee', s.total_fee,
+            'paidFee', s.paid_fee,
+            'monthlyFee', s.monthly_fee,
+            'dueDate', s.due_date,
+            'lastReminder', s.last_reminder,
+            'password', s.password,
+            'status', s.status,
+            'admissionDate', s.admission_date,
+            'batchId', s.batch_id,
+            'photo', s.photo,
+            'isDummy', true
+        )), '[]'::jsonb) FROM public.students s),
+        'teachers', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'id', t.id,
+            'name', t.name,
+            'subject', t.subject,
+            'qualification', t.qualification,
+            'experience', t.experience,
+            'email', t.email,
+            'phone', t.phone,
+            'specialization', t.specialization,
+            'bio', t.bio,
+            'initials', t.initials,
+            'password', t.password,
+            'status', t.status,
+            'avatarColor', t.avatar_color,
+            'photo', t.photo
+        )), '[]'::jsonb) FROM public.teachers t),
+        'materials', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'id', m.id,
+            'batchId', m.batch_id,
+            'batchName', m.batch_name,
+            'title', m.title,
+            'category', m.category,
+            'uploadDate', m.upload_date,
+            'date', m.upload_date,
+            'uploadedBy', m.uploaded_by,
+            'fileSize', m.file_size,
+            'downloads', m.downloads,
+            'description', m.description,
+            'downloadUrl', m.download_url,
+            'driveUrl', m.drive_url
+        )), '[]'::jsonb) FROM public.materials m),
+        'offlineTests', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'id', ot.id,
+            'batchId', ot.batch_id,
+            'title', ot.title,
+            'name', ot.title,
+            'subject', ot.subject,
+            'date', ot.test_date,
+            'testDate', ot.test_date,
+            'maxMarks', ot.max_marks,
+            'marks', ot.marks,
+            'isDummy', true
+        )), '[]'::jsonb) FROM public.offline_tests ot),
+        'gallery', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'id', g.id,
+            'title', g.title,
+            'category', g.category,
+            'date', g.date,
+            'caption', g.caption,
+            'badge', g.badge,
+            'imageUrl', g.image_url,
+            'url', g.image_url
+        )), '[]'::jsonb) FROM public.gallery g),
+        'feedbacks', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'id', f.id,
+            'name', f.name,
+            'authorName', f.name,
+            'comment', f.message,
+            'message', f.message,
+            'rating', f.rating,
+            'date', f.created_at,
+            'batchName', f.batch,
+            'role', f.role,
+            'category', f.category,
+            'read', f.read
+        )), '[]'::jsonb) FROM public.feedbacks f),
+        'notifications', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'id', n.id,
+            'title', n.title,
+            'message', n.message,
+            'time', n.time,
+            'timestamp', n.timestamp,
+            'read', n.read,
+            'adminSeen', n.admin_seen,
+            'type', n.type,
+            'icon', n.icon,
+            'iconColor', n.icon_color,
+            'bgColor', n.bg_color,
+            'actionTab', n.action_tab,
+            'targetRole', n.target_role,
+            'materialId', n.material_id,
+            'batchName', n.batch_name
+        )), '[]'::jsonb) FROM public.notifications n),
+        'attendanceRecords', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'id', a.id,
+            'date', a.date,
+            'batchId', a.batch_id,
+            'studentId', a.student_id,
+            'status', a.status,
+            'markedBy', a.marked_by
+        )), '[]'::jsonb) FROM public.attendance a),
+        'externalLinks', (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+            'id', el.id,
+            'title', el.title,
+            'provider', el.provider,
+            'subject', el.subject,
+            'url', el.url,
+            'driveUrl', el.drive_url,
+            'description', el.description,
+            'dateAdded', el.date_added
+        )), '[]'::jsonb) FROM public.external_links el),
+        'settings', jsonb_build_object(
+            'showDummyData', true,
+            'dummyDataWiped', false,
+            'supabaseEnabled', true,
+            'supabaseUrl', 'https://srjqsofkjizwskqnzyfn.supabase.co',
+            'supabaseKey', 'sb_publishable_vxonFVKPpyJjY5O-Y9mS6g_bhSYCcsS',
+            'sheetsMirrorEnabled', true,
+            'instituteName', 'Divine Classes',
+            'tagline', 'Empowering Aspirants for JEE, NEET & Board Excellence',
+            'phone', '+91 95556 78753',
+            'contactDisplay', '9555-6787-53',
+            'email', 'contact@divineclasses.in',
+            'address', '235 Paschimpuri Pocket 2, Club Rd New Delhi 110063',
+            'adminName', 'Ravi Shankar',
+            'adminEmail', 'divineclasses1010@gmail.com',
+            'leadDevEmail', 'anil.chahar170@gmail.com',
+            'upiId', 'divineclasses@upi',
+            'chatbotEnabled', true,
+            'demoLoginEnabled', true
+        )
+    ),
+    now()
+)
+ON CONFLICT (snapshot_key) DO UPDATE
+SET payload = EXCLUDED.payload,
     updated_at = now();
 
 SELECT table_name, rows_added, rows_updated, demo_rows_present

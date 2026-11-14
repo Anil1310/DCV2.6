@@ -31,8 +31,37 @@
         return list;
     }
 
+    function getUniqueAttendanceRecords(records, onePerStudentDay) {
+        const uniqueRecords = new Map();
+        (records || []).forEach(function (record) {
+            if (!record || !record.date) return;
+            const rawStudentId = String(record.studentId || record.student_id || '').trim();
+            if (!rawStudentId) return;
+            const normalizedId = rawStudentId.toLowerCase();
+            const student = (state.students || []).find(function (item) {
+                return String(item.id || '').trim().toLowerCase() === normalizedId ||
+                    String(item.roll || '').trim().toLowerCase() === normalizedId;
+            });
+            const studentId = student ? String(student.id) : rawStudentId;
+            const batchId = String(record.batchId || record.batch_id || '');
+            const key = JSON.stringify(onePerStudentDay
+                ? [record.date, studentId]
+                : [record.date, batchId, studentId]);
+            const existing = uniqueRecords.get(key);
+            const recordTimestamp = Date.parse(record.updatedAt || record.updated_at || '') || 0;
+            const existingTimestamp = existing
+                ? (Date.parse(existing.updatedAt || existing.updated_at || '') || 0)
+                : -1;
+            if (!existing || recordTimestamp >= existingTimestamp) {
+                uniqueRecords.set(key, Object.assign({}, record, { studentId: studentId }));
+            }
+        });
+        return Array.from(uniqueRecords.values());
+    }
+
     function renderAttendanceView() {
         if (!Array.isArray(state.attendanceRecords)) state.attendanceRecords = [];
+        const attendanceRecords = getUniqueAttendanceRecords(state.attendanceRecords, false);
         const roster = state.attendanceRoster || {};
         const allBatches = Array.isArray(roster.batches) ? roster.batches : (state.batches || []);
         const batches = allBatches.filter(function (batch) {
@@ -54,12 +83,12 @@
 
         const batch = batches.find(function (record) { return record.id === state.attendanceBatchId; });
         const students = getAttendanceBatchStudents(batch, batches, rosterStudents);
-        const dayRecords = state.attendanceRecords.filter(function (record) {
+        const dayRecords = attendanceRecords.filter(function (record) {
             return record.date === state.attendanceDate && record.batchId === state.attendanceBatchId;
         });
         const statusByStudent = {};
         dayRecords.forEach(function (record) { statusByStudent[record.studentId] = record.status; });
-        const monthRecords = state.attendanceRecords.filter(function (record) {
+        const monthRecords = attendanceRecords.filter(function (record) {
             return record.batchId === state.attendanceBatchId && record.date.slice(0, 7) === state.attendanceMonth;
         });
         const daySummaries = {};
@@ -117,9 +146,9 @@
                     <td class="px-3 py-3.5 sm:px-4">${summary.total ? `<span class="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200"><span class="text-emerald-600 dark:text-emerald-400">${summary.Present + summary.Late}/${summary.total}</span><span class="text-slate-400">·</span>${percentage}%</span>` : '<span class="text-xs text-slate-400">No records</span>'}</td>
                     <td class="whitespace-nowrap px-2 py-3.5 sm:px-3">
                         <div class="flex flex-nowrap gap-1.5">
-                            <button type="button" data-attendance-save="${escapeAttr(student.id)}" onclick="saveStudentAttendance('${escapeAttr(student.id)}')" title="Save attendance" class="rounded-lg bg-indigo-600 px-2.5 py-2 text-[11px] font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 lg:px-2 xl:px-2.5" aria-label="Save attendance for ${escapeAttr(student.name || 'student')}"><i class="fa-solid fa-floppy-disk mr-1 lg:mr-0 xl:mr-1"></i><span class="lg:hidden xl:inline">Save</span></button>
+                            <button type="button" data-attendance-save="${escapeAttr(student.id)}" onclick="saveStudentAttendance('${escapeAttr(student.id)}')" title="${selectedStatus ? 'Update' : 'Save'} attendance" class="rounded-lg bg-indigo-600 px-2.5 py-2 text-[11px] font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 lg:px-2 xl:px-2.5" aria-label="${selectedStatus ? 'Update' : 'Save'} attendance for ${escapeAttr(student.name || 'student')}"><i data-attendance-save-icon class="fa-solid fa-floppy-disk mr-1 lg:mr-0 xl:mr-1"></i><span data-attendance-save-label class="lg:hidden xl:inline">${selectedStatus ? 'Update' : 'Save'}</span></button>
                             <button type="button" onclick="viewStudentAttendance('${escapeAttr(student.id)}')" title="View attendance" class="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[11px] font-semibold text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 lg:px-2 xl:px-2.5" aria-label="View attendance for ${escapeAttr(student.name || 'student')}"><i class="fa-solid fa-eye mr-1 lg:mr-0 xl:mr-1"></i><span class="lg:hidden xl:inline">View</span></button>
-                            <button type="button" data-attendance-edit="${escapeAttr(student.id)}" onclick="editStudentAttendance('${escapeAttr(student.id)}')" title="Edit attendance" class="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 lg:px-2 xl:px-2.5"><i class="fa-solid fa-pen-to-square mr-1 lg:mr-0 xl:mr-1"></i><span class="lg:hidden xl:inline">Edit</span></button>
+                            <button type="button" data-attendance-edit="${escapeAttr(student.id)}" onclick="editStudentAttendance('${escapeAttr(student.id)}')" title="Edit attendance" aria-label="Edit attendance for ${escapeAttr(student.name || 'student')}" class="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 lg:px-2 xl:px-2.5"><i class="fa-solid fa-pen-to-square mr-1 lg:mr-0 xl:mr-1"></i><span class="lg:hidden xl:inline">Edit</span></button>
                         </div>
                     </td>
                 </tr>
@@ -157,8 +186,9 @@
                                 return `<option value="${status}" ${selectedStatus === status ? 'selected' : ''}>${status}</option>`;
                             }).join('')}
                         </select>
-                        <button type="button" data-attendance-save="${escapeAttr(student.id)}" onclick="saveStudentAttendance('${escapeAttr(student.id)}')" title="Save attendance" class="rounded-xl bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-2xs hover:bg-indigo-700 transition shrink-0"><i class="fa-solid fa-floppy-disk mr-1"></i>Save</button>
-                        <button type="button" data-attendance-edit="${escapeAttr(student.id)}" onclick="editStudentAttendance('${escapeAttr(student.id)}')" title="Edit attendance" class="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 transition shrink-0 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300"><i class="fa-solid fa-pen-to-square"></i></button>
+                        <button type="button" data-attendance-save="${escapeAttr(student.id)}" onclick="saveStudentAttendance('${escapeAttr(student.id)}')" title="${selectedStatus ? 'Update' : 'Save'} attendance" aria-label="${selectedStatus ? 'Update' : 'Save'} attendance for ${escapeAttr(student.name || 'student')}" class="rounded-xl bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-2xs hover:bg-indigo-700 transition shrink-0"><i data-attendance-save-icon class="fa-solid fa-floppy-disk mr-1"></i><span data-attendance-save-label>${selectedStatus ? 'Update' : 'Save'}</span></button>
+                        <button type="button" onclick="viewStudentAttendance('${escapeAttr(student.id)}')" title="View attendance" class="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 transition shrink-0 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300" aria-label="View attendance for ${escapeAttr(student.name || 'student')}"><i class="fa-solid fa-eye mr-1"></i><span>View</span></button>
+                        <button type="button" data-attendance-edit="${escapeAttr(student.id)}" onclick="editStudentAttendance('${escapeAttr(student.id)}')" title="Edit attendance" aria-label="Edit attendance for ${escapeAttr(student.name || 'student')}" class="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 transition shrink-0 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300"><i class="fa-solid fa-pen-to-square mr-1"></i><span>Edit</span></button>
                     </div>
                 </div>
             `;
@@ -189,7 +219,7 @@
                             <div>
                                 <div class="mb-2 flex items-center gap-2 text-indigo-100"><span class="rounded-full border border-white/20 bg-white/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em]">Daily class register</span></div>
                                 <h2 class="text-2xl font-bold font-heading sm:text-3xl">Attendance</h2>
-                                <p class="mt-2 max-w-xl text-xs leading-5 text-indigo-100 sm:text-sm">Mark daily attendance and review the monthly register for each class batch.</p>
+                                <p class="mt-2 max-w-xl text-xs leading-5 text-indigo-100 sm:text-sm">Mark attendance and review the monthly register. Admins and assigned teachers can edit saved records.</p>
                             </div>
                         </div>
                         <div class="grid grid-cols-2 gap-3 rounded-2xl border border-white/15 bg-white/10 p-3 backdrop-blur-sm">
@@ -220,7 +250,7 @@
                             <div class="flex items-center gap-3">
                                 <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"><i class="fa-solid fa-clipboard-check"></i></span>
                                 <div><h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Mark daily attendance</h3>
-                                <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Choose a batch, mark students, then save. Unmarked students stay unchanged.</p></div>
+                                <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Choose a batch and mark students. To change a saved status, choose Edit, select the new status, then Update. Unmarked students stay unchanged.</p></div>
                             </div>
                         </div>
                         <label class="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Select batch
@@ -348,36 +378,72 @@
     }
 
     function setAttendanceForAll(status) {
+        if (state.currentRole !== 'admin' && state.currentRole !== 'developer' && state.currentRole !== 'teacher') {
+            showToast('Only Admins and Teachers can mark attendance.', 'error');
+            return;
+        }
         document.querySelectorAll('[data-attendance-student]').forEach(function (select) {
             select.disabled = false;
             select.value = status;
         });
+        document.querySelectorAll('[data-attendance-edit]').forEach(function (btn) {
+            btn.innerHTML = '<i class="fa-solid fa-xmark mr-1"></i>Cancel';
+            btn.classList.remove('border-slate-200', 'bg-slate-50', 'text-slate-600');
+            btn.classList.add('border-amber-300', 'bg-amber-50', 'text-amber-800');
+        });
     }
 
-    function findAttendanceSelect(studentId) {
-        return Array.from(document.querySelectorAll('[data-attendance-student]')).find(function (select) {
+    function getAttendanceSelects(studentId) {
+        return Array.from(document.querySelectorAll('[data-attendance-student]')).filter(function (select) {
             return String(select.getAttribute('data-attendance-student')) === String(studentId);
         });
     }
 
-    function editStudentAttendance(studentId) {
-        const select = findAttendanceSelect(studentId);
-        const editButton = Array.from(document.querySelectorAll('[data-attendance-edit]')).find(function (button) {
+    function getAttendanceEditButtons(studentId) {
+        return Array.from(document.querySelectorAll('[data-attendance-edit]')).filter(function (button) {
             return String(button.getAttribute('data-attendance-edit')) === String(studentId);
         });
-        if (!select || !editButton) return;
-        if (select.disabled) {
-            select.disabled = false;
-            editButton.innerHTML = '<i class="fa-solid fa-xmark mr-1"></i>Cancel';
-            editButton.classList.remove('border-amber-200', 'bg-amber-50', 'text-amber-800');
-            editButton.classList.add('border-slate-200', 'bg-white', 'text-slate-600');
+    }
+
+    function getAttendanceSaveButtons(studentId) {
+        return Array.from(document.querySelectorAll('[data-attendance-save]')).filter(function (button) {
+            return String(button.getAttribute('data-attendance-save')) === String(studentId);
+        });
+    }
+
+    function editStudentAttendance(studentId) {
+        if (state.currentRole !== 'admin' && state.currentRole !== 'developer' && state.currentRole !== 'teacher') {
+            showToast('Only Admins and Teachers can edit attendance.', 'error');
             return;
         }
-        select.value = select.getAttribute('data-saved-status') || '';
-        select.disabled = Boolean(select.getAttribute('data-saved-status'));
-        editButton.innerHTML = '<i class="fa-solid fa-pen-to-square mr-1"></i>Edit';
-        editButton.classList.remove('border-slate-200', 'bg-white', 'text-slate-600');
-        editButton.classList.add('border-amber-200', 'bg-amber-50', 'text-amber-800');
+        const selects = getAttendanceSelects(studentId);
+        const editButtons = getAttendanceEditButtons(studentId);
+        if (!selects.length || !editButtons.length) return;
+
+        // Check if currently disabled in any view
+        const isCurrentlyDisabled = selects.some(function (s) { return s.disabled; });
+
+        selects.forEach(function (select) {
+            if (isCurrentlyDisabled) {
+                select.disabled = false;
+                try { select.focus(); } catch (e) {}
+            } else {
+                select.value = select.getAttribute('data-saved-status') || '';
+                select.disabled = Boolean(select.getAttribute('data-saved-status'));
+            }
+        });
+
+        editButtons.forEach(function (editButton) {
+            if (isCurrentlyDisabled) {
+                editButton.innerHTML = '<i class="fa-solid fa-xmark mr-1"></i>Cancel';
+                editButton.classList.remove('border-slate-200', 'bg-slate-50', 'text-slate-600');
+                editButton.classList.add('border-amber-300', 'bg-amber-50', 'text-amber-800');
+            } else {
+                editButton.innerHTML = '<i class="fa-solid fa-pen-to-square mr-1"></i>Edit';
+                editButton.classList.remove('border-amber-300', 'bg-amber-50', 'text-amber-800');
+                editButton.classList.add('border-slate-200', 'bg-slate-50', 'text-slate-600');
+            }
+        });
     }
 
     function viewStudentAttendance(studentId) {
@@ -422,41 +488,59 @@
             showToast('Only Admins and Teachers can save attendance.', 'error');
             return;
         }
-        const select = findAttendanceSelect(studentId);
-        const saveButton = Array.from(document.querySelectorAll('[data-attendance-save]')).find(function (button) {
-            return String(button.getAttribute('data-attendance-save')) === String(studentId);
-        });
-        if (!select || !select.value) {
-            if (select) {
-                select.value = 'Present';
-                select.disabled = false;
-            } else {
-                showToast('Select an attendance status before saving this student.', 'warning');
-                return;
+        const selects = getAttendanceSelects(studentId);
+        const saveButtons = getAttendanceSaveButtons(studentId);
+        const editButtons = getAttendanceEditButtons(studentId);
+
+        let statusValue = '';
+        for (let i = 0; i < selects.length; i++) {
+            if (selects[i].value) {
+                statusValue = selects[i].value;
+                break;
             }
         }
+        if (!statusValue) {
+            statusValue = 'Present';
+        }
+
         const student = ((state.attendanceRoster && state.attendanceRoster.students) || state.students || []).find(function (record) {
             return String(record.id) === String(studentId) || String(record.roll) === String(studentId);
         });
         const targetStudentId = student ? student.id : studentId;
         const studentName = (student && student.name) || 'student';
-        const statusValue = select.value;
 
-        // Instant visual feedback (0-1s)
-        if (saveButton) {
-            saveButton.innerHTML = '<i class="fa-solid fa-check text-emerald-300 mr-1"></i>Saved';
+        // Update all corresponding select elements (desktop and mobile)
+        selects.forEach(function (select) {
+            select.value = statusValue;
+            select.setAttribute('data-saved-status', statusValue);
+            select.disabled = true;
+        });
+
+        // Reset edit buttons back to "Edit" state
+        editButtons.forEach(function (editButton) {
+            editButton.innerHTML = '<i class="fa-solid fa-pen-to-square mr-1"></i>Edit';
+            editButton.classList.remove('border-amber-300', 'bg-amber-50', 'text-amber-800');
+            editButton.classList.add('border-slate-200', 'bg-slate-50', 'text-slate-600');
+        });
+
+        // Instant visual feedback on all matching save buttons (0-1s)
+        saveButtons.forEach(function (saveButton) {
+            const saveIcon = saveButton.querySelector('[data-attendance-save-icon]');
+            const saveLabel = saveButton.querySelector('[data-attendance-save-label]');
+            if (saveIcon) saveIcon.className = 'fa-solid fa-check text-emerald-300 mr-1';
+            if (saveLabel) saveLabel.textContent = 'Saved';
             saveButton.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
             saveButton.classList.add('bg-emerald-600');
             setTimeout(function () {
                 if (saveButton) {
-                    saveButton.innerHTML = '<i class="fa-solid fa-floppy-disk mr-1"></i>Save';
+                    if (saveIcon) saveIcon.className = 'fa-solid fa-floppy-disk mr-1';
+                    if (saveLabel) saveLabel.textContent = 'Update';
                     saveButton.classList.remove('bg-emerald-600');
                     saveButton.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
                 }
             }, 1800);
-        }
-        select.setAttribute('data-saved-status', statusValue);
-        select.disabled = true;
+        });
+
         showToast('Attendance saved for ' + studentName + ' (' + statusValue + ').', 'success');
 
         saveAttendanceEntries([{
@@ -471,14 +555,17 @@
             return;
         }
         const saveButton = document.querySelector('button[onclick="saveDailyAttendance()"]');
-        const entries = Array.from(document.querySelectorAll('[data-attendance-student]')).map(function (select) {
-            if (!select.value) {
-                select.value = 'Present';
+        const entriesMap = {};
+        document.querySelectorAll('[data-attendance-student]').forEach(function (select) {
+            const sId = select.getAttribute('data-attendance-student');
+            if (sId) {
+                if (!select.value) select.value = 'Present';
+                if (!entriesMap[sId]) {
+                    entriesMap[sId] = { studentId: sId, status: select.value };
+                }
             }
-            return { studentId: select.getAttribute('data-attendance-student'), status: select.value };
-        }).filter(function (entry) {
-            return entry.status;
         });
+        const entries = Object.values(entriesMap);
         if (!entries.length) {
             showToast('Mark at least one student before saving attendance.', 'warning');
             return;
@@ -500,13 +587,21 @@
             }, 1800);
         }
 
-        // Lock select dropdowns immediately
+        // Lock all select dropdowns immediately and reset edit buttons
         entries.forEach(function (entry) {
-            const selectEl = document.querySelector('[data-attendance-student="' + entry.studentId + '"]');
-            if (selectEl) {
+            getAttendanceSelects(entry.studentId).forEach(function (selectEl) {
                 selectEl.setAttribute('data-saved-status', entry.status);
                 selectEl.disabled = true;
-            }
+            });
+            getAttendanceEditButtons(entry.studentId).forEach(function (btn) {
+                btn.innerHTML = '<i class="fa-solid fa-pen-to-square mr-1"></i>Edit';
+                btn.classList.remove('border-amber-300', 'bg-amber-50', 'text-amber-800');
+                btn.classList.add('border-slate-200', 'bg-slate-50', 'text-slate-600');
+            });
+            getAttendanceSaveButtons(entry.studentId).forEach(function (btn) {
+                const saveLabel = btn.querySelector('[data-attendance-save-label]');
+                if (saveLabel) saveLabel.textContent = 'Update';
+            });
         });
 
         showToast('Attendance saved for ' + entries.length + ' students.', 'success');
@@ -526,6 +621,7 @@
 
         // 1. Instantly update in-memory attendance state
         if (!Array.isArray(state.attendanceRecords)) state.attendanceRecords = [];
+        state.attendanceRecords = getUniqueAttendanceRecords(state.attendanceRecords, false);
         entries.forEach(function (entry) {
             const rowId = String(state.attendanceDate) + '_' + String(state.attendanceBatchId) + '_' + String(entry.studentId);
             const existingIdx = state.attendanceRecords.findIndex(function (r) {
@@ -592,11 +688,13 @@
         const monthNum = parts[1];
 
         // Match existing records in state.attendanceRecords
-        const matchingRecords = (state.attendanceRecords || []).filter(function (r) {
+        const matchingRecords = getUniqueAttendanceRecords((state.attendanceRecords || []).filter(function (r) {
             const dateMatch = r.date && r.date.slice(0, 7) === yearMonth;
-            const studentMatch = String(r.studentId) === String(sId) || String(r.studentId) === String(sRoll);
+            const recordStudentId = String(r.studentId || r.student_id || '').trim().toLowerCase();
+            const studentMatch = recordStudentId === String(sId || '').trim().toLowerCase() ||
+                recordStudentId === String(sRoll || '').trim().toLowerCase();
             return dateMatch && studentMatch;
-        });
+        }), true);
 
         let records = [];
         if (matchingRecords.length > 0) {

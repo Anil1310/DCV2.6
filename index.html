@@ -94,6 +94,7 @@
     }
     #btn-sync .sync-status-label {
         max-width: 0;
+        min-width: 0;
         opacity: 0;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -744,6 +745,28 @@
             align-items: center !important;
             justify-content: center !important;
             box-sizing: border-box !important;
+        }
+        #header-action-controls > #btn-sync.sync-status-button {
+            min-width: 2.25rem !important;
+            padding: 0 0.625rem !important;
+            width: 2.25rem !important;
+        }
+        #header-action-controls > #btn-sync.sync-status-button.is-expanded {
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.2);
+            height: 2.25rem !important;
+            min-width: min(12rem, calc(100vw - 1.5rem)) !important;
+            padding: 0 0.625rem !important;
+            position: fixed !important;
+            right: calc(6.375rem + env(safe-area-inset-right, 0px)) !important;
+            top: calc(0.625rem + env(safe-area-inset-top, 0px)) !important;
+            width: min(12rem, calc(100vw - 1.5rem)) !important;
+            z-index: 1000;
+        }
+        #header-action-controls > #btn-sync.sync-status-button.is-collapsed {
+            position: static !important;
+            min-width: 2.25rem !important;
+            padding: 0 0.625rem !important;
+            width: 2.25rem !important;
         }
         #auth-header-container,
         #auth-header-container > div {
@@ -1397,10 +1420,15 @@ window.DIVINE_PAGE_BACKENDS = {
                 'access_status': 'status',
                 'contact_phone': 'phone',
                 'parent_name': 'parentName',
+                'total_fee': 'totalFee',
                 'total_fee_inr': 'totalFee',
+                'paid_fee': 'paidFee',
                 'paid_fee_inr': 'paidFee',
+                'monthly_fee': 'monthlyFee',
                 'monthly_fee_inr': 'monthlyFee',
+                'due_date': 'dueDate',
                 'fee_due_date': 'dueDate',
+                'last_reminder': 'lastReminder',
                 'last_reminder_sent': 'lastReminder',
                 'admission_date': 'admissionDate',
                 'batch_id': 'batchId',
@@ -1660,7 +1688,8 @@ window.DIVINE_PAGE_BACKENDS = {
             out.dueDate = out.dueDate || row.fee_due_date || row.due_date || 'Fully Paid';
             out.lastReminder = out.lastReminder || row.last_reminder_sent || row.last_reminder || '-';
             out.admissionDate = out.admissionDate || row.admission_date || '';
-            out.batchId = out.batchId || (['DC-101','DC-102','DC-103','DC-104','DC-105'].includes(out.roll) ? 'b1' : (['DC-106','DC-107','DC-108'].includes(out.roll) ? 'b2' : 'b3'));
+            out.batchId = out.batchId || row.batch_id || (['DC-101','DC-102','DC-103','DC-104','DC-105'].includes(out.roll) ? 'b1' : (['DC-106','DC-107','DC-108'].includes(out.roll) ? 'b2' : 'b3'));
+            out.photo = out.photo || row.photo || row.profile_photo || '';
         }
         if (tableConfig.stateKey === 'teachers') {
             out.id = out.id || row.teacher_id || row.id || '';
@@ -1701,6 +1730,33 @@ window.DIVINE_PAGE_BACKENDS = {
         return out;
     }
 
+    function mergeSupabaseCollectionRows(snapshotRows, tableRows, stateKey) {
+        const merged = snapshotRows.slice();
+        const seen = new Set();
+        const getIdentity = function (record) {
+            if (!record || typeof record !== 'object') return '';
+            if (stateKey === 'students') return String(record.roll || record.id || '');
+            if (stateKey === 'attendanceRecords') {
+                const composite = [record.date, record.batchId || record.batch_id, record.studentId || record.student_id]
+                    .map(function (value) { return String(value || '').trim(); });
+                if (composite.every(Boolean)) return composite.join('|');
+            }
+            return record.id == null ? '' : String(record.id);
+        };
+        merged.forEach(function (record) {
+            const identity = getIdentity(record);
+            if (identity) seen.add(identity);
+        });
+        tableRows.forEach(function (record) {
+            const identity = getIdentity(record);
+            const fallbackIdentity = identity || JSON.stringify(record);
+            if (seen.has(fallbackIdentity)) return;
+            seen.add(fallbackIdentity);
+            merged.push(record);
+        });
+        return merged;
+    }
+
     function supabaseSafeSnapshot(data) {
         const snapshot = JSON.parse(JSON.stringify(data || {}));
         if (snapshot.settings) {
@@ -1733,7 +1789,9 @@ window.DIVINE_PAGE_BACKENDS = {
         const savedSettings = snapshotRows[0] && snapshotRows[0].payload && snapshotRows[0].payload.settings;
         const savedClearEpoch = String(savedSettings && savedSettings._applicationDataClearEpoch || '');
         const localClearEpoch = String(state.settings && state.settings._applicationDataClearEpoch || '');
-        if (savedClearEpoch && savedClearEpoch !== localClearEpoch) {
+        if (state.settings && (state.settings.showDummyData === true || state.settings.showDummyData === 'On') && !state.settings.dummyDataWiped) {
+            // Active demo data in local state must not be wiped by a stale remote snapshot
+        } else if (savedClearEpoch && savedClearEpoch !== localClearEpoch) {
             const savedPayload = snapshotRows[0].payload;
             if (typeof crossDeviceApplyRemotePayload === 'function') {
                 crossDeviceApplyRemotePayload(savedPayload);
@@ -1744,8 +1802,7 @@ window.DIVINE_PAGE_BACKENDS = {
             }
             localStorage.removeItem(PENDING_SYNC_KEY);
             return { synced: false, reason: 'application-data-was-cleared' };
-        }
-        if (savedSettings && (savedSettings.dummyDataWiped === true || savedSettings.dummyDataWiped === 'true')) {
+        } else if (savedSettings && (savedSettings.dummyDataWiped === true || savedSettings.dummyDataWiped === 'true')) {
             if (!state.settings) state.settings = {};
             state.settings.dummyDataWiped = true;
             state.settings.showDummyData = false;
@@ -2093,11 +2150,18 @@ window.DIVINE_PAGE_BACKENDS = {
     }
 
     async function loadDataFromSupabase() {
-        if (!state.settings || state.settings.supabaseEnabled !== true) return;
+        if (!state.settings) state.settings = {};
+        if (state.settings.supabaseEnabled !== false) {
+            state.settings.supabaseEnabled = true;
+            if (!state.settings.supabaseUrl) state.settings.supabaseUrl = 'https://srjqsofkjizwskqnzyfn.supabase.co';
+            if (!state.settings.supabaseKey) state.settings.supabaseKey = 'sb_publishable_vxonFVKPpyJjY5O-Y9mS6g_bhSYCcsS';
+        }
+        if (state.settings.supabaseEnabled !== true) return;
 
         const loadedData = {};
         const loadErrors = [];
         const emptyTables = [];
+        let loadedSnapshot = false;
         for (const tableName of Object.keys(SUPABASE_TABLE_MAP)) {
             try {
                 const config = SUPABASE_TABLE_MAP[tableName];
@@ -2119,6 +2183,7 @@ window.DIVINE_PAGE_BACKENDS = {
                 }
             } catch (e) {
                 console.warn('Could not load ' + tableName + ' from Supabase (skipping):', e);
+                loadErrors.push(tableName + ': ' + ((e && e.message) || String(e)));
             }
         }
 
@@ -2214,17 +2279,61 @@ window.DIVINE_PAGE_BACKENDS = {
             console.warn('Failed to load settings from Supabase:', e);
         }
 
+        try {
+            const snapshotResponse = await supabaseFetch('db_json?snapshot_key=eq.main&select=payload');
+            if (snapshotResponse.ok) {
+                const snapshotRows = await snapshotResponse.json();
+                const snapshot = snapshotRows[0] && snapshotRows[0].payload;
+                if (snapshot && typeof snapshot === 'object') {
+                    // Keep snapshot details, but add table rows missing from a stale/partial snapshot.
+                    [
+                        'batches', 'students', 'teachers', 'materials', 'offlineTests',
+                        'gallery', 'externalLinks', 'feedbacks', 'notifications', 'attendanceRecords'
+                    ].forEach(function (key) {
+                        if (!Array.isArray(snapshot[key])) return;
+                        const tableRows = Array.isArray(loadedData[key]) ? loadedData[key] : [];
+                        loadedData[key] = tableRows.length
+                            ? mergeSupabaseCollectionRows(snapshot[key], tableRows, key)
+                            : snapshot[key];
+                    });
+                    if (snapshot.settings && typeof snapshot.settings === 'object') {
+                        const snapSettings = Object.assign({}, snapshot.settings);
+                        const hasActiveTableRows = ['students', 'batches', 'teachers'].some(function (k) {
+                            return Array.isArray(loadedData[k]) && loadedData[k].length > 0;
+                        });
+                        if (hasActiveTableRows || (loadedData.settings && loadedData.settings.showDummyData === true)) {
+                            snapSettings.dummyDataWiped = false;
+                            snapSettings.showDummyData = true;
+                        }
+                        loadedData.settings = Object.assign({}, loadedData.settings || {}, snapSettings);
+                    }
+                    loadedSnapshot = true;
+                }
+            } else {
+                console.warn('[Supabase] Could not load the canonical application snapshot (HTTP ' + snapshotResponse.status + ').');
+            }
+        } catch (snapshotError) {
+            console.warn('[Supabase] Could not load the canonical application snapshot:', snapshotError);
+        }
+
         Object.keys(loadedData).forEach(function (key) {
-            // Apply loaded data exactly as it is in Supabase, including empty
-            // arrays (e.g. batches: [] → "0 Batches" when the DB table is empty).
+            // Empty arrays still apply when the corresponding dedicated table is empty.
             if (loadedData[key] !== undefined && loadedData[key] !== null) {
                 state[key] = loadedData[key];
             }
         });
-        if (!emptyTables.includes('batches') && !emptyTables.includes('students')) {
+
+        // If core tables contain data from Supabase, ensure demo data is visible
+        if (state.settings && ['students', 'batches', 'teachers'].some(function (k) {
+            return Array.isArray(state[k]) && state[k].length > 0;
+        })) {
+            state.settings.showDummyData = true;
+            state.settings.dummyDataWiped = false;
+        }
+        if (loadedSnapshot || (!emptyTables.includes('batches') && !emptyTables.includes('students'))) {
             rememberSupabaseSyncSnapshot();
         }
-        return { emptyTables: emptyTables };
+        return { emptyTables: emptyTables, loadErrors: loadErrors };
     }
 
     async function refreshSupabaseTables() {
@@ -2254,8 +2363,7 @@ window.DIVINE_PAGE_BACKENDS = {
                 });
                 if (JSON.stringify(beforeObj.settings || {}) !== JSON.stringify(state.settings || {})) changedKeys.push('settings');
 
-                const isAndroidApp = document.documentElement.classList.contains('android-app');
-                if (!isAndroidApp && canBackgroundRerenderMainContent(changedKeys)) {
+                if (canBackgroundRerenderMainContent(changedKeys)) {
                     if (typeof updateRoleUI === 'function') updateRoleUI();
                     if (typeof renderSidebar === 'function') renderSidebar();
                     if (typeof renderMainContentPreservingScroll === 'function') {
@@ -2751,8 +2859,37 @@ window.DIVINE_PAGE_BACKENDS = {
         return list;
     }
 
+    function getUniqueAttendanceRecords(records, onePerStudentDay) {
+        const uniqueRecords = new Map();
+        (records || []).forEach(function (record) {
+            if (!record || !record.date) return;
+            const rawStudentId = String(record.studentId || record.student_id || '').trim();
+            if (!rawStudentId) return;
+            const normalizedId = rawStudentId.toLowerCase();
+            const student = (state.students || []).find(function (item) {
+                return String(item.id || '').trim().toLowerCase() === normalizedId ||
+                    String(item.roll || '').trim().toLowerCase() === normalizedId;
+            });
+            const studentId = student ? String(student.id) : rawStudentId;
+            const batchId = String(record.batchId || record.batch_id || '');
+            const key = JSON.stringify(onePerStudentDay
+                ? [record.date, studentId]
+                : [record.date, batchId, studentId]);
+            const existing = uniqueRecords.get(key);
+            const recordTimestamp = Date.parse(record.updatedAt || record.updated_at || '') || 0;
+            const existingTimestamp = existing
+                ? (Date.parse(existing.updatedAt || existing.updated_at || '') || 0)
+                : -1;
+            if (!existing || recordTimestamp >= existingTimestamp) {
+                uniqueRecords.set(key, Object.assign({}, record, { studentId: studentId }));
+            }
+        });
+        return Array.from(uniqueRecords.values());
+    }
+
     function renderAttendanceView() {
         if (!Array.isArray(state.attendanceRecords)) state.attendanceRecords = [];
+        const attendanceRecords = getUniqueAttendanceRecords(state.attendanceRecords, false);
         const roster = state.attendanceRoster || {};
         const allBatches = Array.isArray(roster.batches) ? roster.batches : (state.batches || []);
         const batches = allBatches.filter(function (batch) {
@@ -2774,12 +2911,12 @@ window.DIVINE_PAGE_BACKENDS = {
 
         const batch = batches.find(function (record) { return record.id === state.attendanceBatchId; });
         const students = getAttendanceBatchStudents(batch, batches, rosterStudents);
-        const dayRecords = state.attendanceRecords.filter(function (record) {
+        const dayRecords = attendanceRecords.filter(function (record) {
             return record.date === state.attendanceDate && record.batchId === state.attendanceBatchId;
         });
         const statusByStudent = {};
         dayRecords.forEach(function (record) { statusByStudent[record.studentId] = record.status; });
-        const monthRecords = state.attendanceRecords.filter(function (record) {
+        const monthRecords = attendanceRecords.filter(function (record) {
             return record.batchId === state.attendanceBatchId && record.date.slice(0, 7) === state.attendanceMonth;
         });
         const daySummaries = {};
@@ -2837,9 +2974,9 @@ window.DIVINE_PAGE_BACKENDS = {
                     <td class="px-3 py-3.5 sm:px-4">${summary.total ? `<span class="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-700 dark:bg-slate-700 dark:text-slate-200"><span class="text-emerald-600 dark:text-emerald-400">${summary.Present + summary.Late}/${summary.total}</span><span class="text-slate-400">·</span>${percentage}%</span>` : '<span class="text-xs text-slate-400">No records</span>'}</td>
                     <td class="whitespace-nowrap px-2 py-3.5 sm:px-3">
                         <div class="flex flex-nowrap gap-1.5">
-                            <button type="button" data-attendance-save="${escapeAttr(student.id)}" onclick="saveStudentAttendance('${escapeAttr(student.id)}')" title="Save attendance" class="rounded-lg bg-indigo-600 px-2.5 py-2 text-[11px] font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 lg:px-2 xl:px-2.5" aria-label="Save attendance for ${escapeAttr(student.name || 'student')}"><i class="fa-solid fa-floppy-disk mr-1 lg:mr-0 xl:mr-1"></i><span class="lg:hidden xl:inline">Save</span></button>
+                            <button type="button" data-attendance-save="${escapeAttr(student.id)}" onclick="saveStudentAttendance('${escapeAttr(student.id)}')" title="${selectedStatus ? 'Update' : 'Save'} attendance" class="rounded-lg bg-indigo-600 px-2.5 py-2 text-[11px] font-semibold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50 lg:px-2 xl:px-2.5" aria-label="${selectedStatus ? 'Update' : 'Save'} attendance for ${escapeAttr(student.name || 'student')}"><i data-attendance-save-icon class="fa-solid fa-floppy-disk mr-1 lg:mr-0 xl:mr-1"></i><span data-attendance-save-label class="lg:hidden xl:inline">${selectedStatus ? 'Update' : 'Save'}</span></button>
                             <button type="button" onclick="viewStudentAttendance('${escapeAttr(student.id)}')" title="View attendance" class="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[11px] font-semibold text-slate-600 transition hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 lg:px-2 xl:px-2.5" aria-label="View attendance for ${escapeAttr(student.name || 'student')}"><i class="fa-solid fa-eye mr-1 lg:mr-0 xl:mr-1"></i><span class="lg:hidden xl:inline">View</span></button>
-                            <button type="button" data-attendance-edit="${escapeAttr(student.id)}" onclick="editStudentAttendance('${escapeAttr(student.id)}')" title="Edit attendance" class="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 lg:px-2 xl:px-2.5"><i class="fa-solid fa-pen-to-square mr-1 lg:mr-0 xl:mr-1"></i><span class="lg:hidden xl:inline">Edit</span></button>
+                            <button type="button" data-attendance-edit="${escapeAttr(student.id)}" onclick="editStudentAttendance('${escapeAttr(student.id)}')" title="Edit attendance" aria-label="Edit attendance for ${escapeAttr(student.name || 'student')}" class="rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-[11px] font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 lg:px-2 xl:px-2.5"><i class="fa-solid fa-pen-to-square mr-1 lg:mr-0 xl:mr-1"></i><span class="lg:hidden xl:inline">Edit</span></button>
                         </div>
                     </td>
                 </tr>
@@ -2877,8 +3014,9 @@ window.DIVINE_PAGE_BACKENDS = {
                                 return `<option value="${status}" ${selectedStatus === status ? 'selected' : ''}>${status}</option>`;
                             }).join('')}
                         </select>
-                        <button type="button" data-attendance-save="${escapeAttr(student.id)}" onclick="saveStudentAttendance('${escapeAttr(student.id)}')" title="Save attendance" class="rounded-xl bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-2xs hover:bg-indigo-700 transition shrink-0"><i class="fa-solid fa-floppy-disk mr-1"></i>Save</button>
-                        <button type="button" data-attendance-edit="${escapeAttr(student.id)}" onclick="editStudentAttendance('${escapeAttr(student.id)}')" title="Edit attendance" class="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 transition shrink-0 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300"><i class="fa-solid fa-pen-to-square"></i></button>
+                        <button type="button" data-attendance-save="${escapeAttr(student.id)}" onclick="saveStudentAttendance('${escapeAttr(student.id)}')" title="${selectedStatus ? 'Update' : 'Save'} attendance" aria-label="${selectedStatus ? 'Update' : 'Save'} attendance for ${escapeAttr(student.name || 'student')}" class="rounded-xl bg-indigo-600 px-3 py-2 text-xs font-bold text-white shadow-2xs hover:bg-indigo-700 transition shrink-0"><i data-attendance-save-icon class="fa-solid fa-floppy-disk mr-1"></i><span data-attendance-save-label>${selectedStatus ? 'Update' : 'Save'}</span></button>
+                        <button type="button" onclick="viewStudentAttendance('${escapeAttr(student.id)}')" title="View attendance" class="rounded-xl border border-slate-200 bg-white px-2.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 transition shrink-0 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300" aria-label="View attendance for ${escapeAttr(student.name || 'student')}"><i class="fa-solid fa-eye mr-1"></i><span>View</span></button>
+                        <button type="button" data-attendance-edit="${escapeAttr(student.id)}" onclick="editStudentAttendance('${escapeAttr(student.id)}')" title="Edit attendance" aria-label="Edit attendance for ${escapeAttr(student.name || 'student')}" class="rounded-xl border border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 transition shrink-0 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300"><i class="fa-solid fa-pen-to-square mr-1"></i><span>Edit</span></button>
                     </div>
                 </div>
             `;
@@ -2909,7 +3047,7 @@ window.DIVINE_PAGE_BACKENDS = {
                             <div>
                                 <div class="mb-2 flex items-center gap-2 text-indigo-100"><span class="rounded-full border border-white/20 bg-white/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-[0.16em]">Daily class register</span></div>
                                 <h2 class="text-2xl font-bold font-heading sm:text-3xl">Attendance</h2>
-                                <p class="mt-2 max-w-xl text-xs leading-5 text-indigo-100 sm:text-sm">Mark daily attendance and review the monthly register for each class batch.</p>
+                                <p class="mt-2 max-w-xl text-xs leading-5 text-indigo-100 sm:text-sm">Mark attendance and review the monthly register. Admins and assigned teachers can edit saved records.</p>
                             </div>
                         </div>
                         <div class="grid grid-cols-2 gap-3 rounded-2xl border border-white/15 bg-white/10 p-3 backdrop-blur-sm">
@@ -2940,7 +3078,7 @@ window.DIVINE_PAGE_BACKENDS = {
                             <div class="flex items-center gap-3">
                                 <span class="flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300"><i class="fa-solid fa-clipboard-check"></i></span>
                                 <div><h3 class="text-sm font-bold text-slate-900 dark:text-slate-100">Mark daily attendance</h3>
-                                <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Choose a batch, mark students, then save. Unmarked students stay unchanged.</p></div>
+                                <p class="mt-1 text-[11px] text-slate-500 dark:text-slate-400">Choose a batch and mark students. To change a saved status, choose Edit, select the new status, then Update. Unmarked students stay unchanged.</p></div>
                             </div>
                         </div>
                         <label class="text-[11px] font-semibold text-slate-500 dark:text-slate-400">Select batch
@@ -3068,36 +3206,72 @@ window.DIVINE_PAGE_BACKENDS = {
     }
 
     function setAttendanceForAll(status) {
+        if (state.currentRole !== 'admin' && state.currentRole !== 'developer' && state.currentRole !== 'teacher') {
+            showToast('Only Admins and Teachers can mark attendance.', 'error');
+            return;
+        }
         document.querySelectorAll('[data-attendance-student]').forEach(function (select) {
             select.disabled = false;
             select.value = status;
         });
+        document.querySelectorAll('[data-attendance-edit]').forEach(function (btn) {
+            btn.innerHTML = '<i class="fa-solid fa-xmark mr-1"></i>Cancel';
+            btn.classList.remove('border-slate-200', 'bg-slate-50', 'text-slate-600');
+            btn.classList.add('border-amber-300', 'bg-amber-50', 'text-amber-800');
+        });
     }
 
-    function findAttendanceSelect(studentId) {
-        return Array.from(document.querySelectorAll('[data-attendance-student]')).find(function (select) {
+    function getAttendanceSelects(studentId) {
+        return Array.from(document.querySelectorAll('[data-attendance-student]')).filter(function (select) {
             return String(select.getAttribute('data-attendance-student')) === String(studentId);
         });
     }
 
-    function editStudentAttendance(studentId) {
-        const select = findAttendanceSelect(studentId);
-        const editButton = Array.from(document.querySelectorAll('[data-attendance-edit]')).find(function (button) {
+    function getAttendanceEditButtons(studentId) {
+        return Array.from(document.querySelectorAll('[data-attendance-edit]')).filter(function (button) {
             return String(button.getAttribute('data-attendance-edit')) === String(studentId);
         });
-        if (!select || !editButton) return;
-        if (select.disabled) {
-            select.disabled = false;
-            editButton.innerHTML = '<i class="fa-solid fa-xmark mr-1"></i>Cancel';
-            editButton.classList.remove('border-amber-200', 'bg-amber-50', 'text-amber-800');
-            editButton.classList.add('border-slate-200', 'bg-white', 'text-slate-600');
+    }
+
+    function getAttendanceSaveButtons(studentId) {
+        return Array.from(document.querySelectorAll('[data-attendance-save]')).filter(function (button) {
+            return String(button.getAttribute('data-attendance-save')) === String(studentId);
+        });
+    }
+
+    function editStudentAttendance(studentId) {
+        if (state.currentRole !== 'admin' && state.currentRole !== 'developer' && state.currentRole !== 'teacher') {
+            showToast('Only Admins and Teachers can edit attendance.', 'error');
             return;
         }
-        select.value = select.getAttribute('data-saved-status') || '';
-        select.disabled = Boolean(select.getAttribute('data-saved-status'));
-        editButton.innerHTML = '<i class="fa-solid fa-pen-to-square mr-1"></i>Edit';
-        editButton.classList.remove('border-slate-200', 'bg-white', 'text-slate-600');
-        editButton.classList.add('border-amber-200', 'bg-amber-50', 'text-amber-800');
+        const selects = getAttendanceSelects(studentId);
+        const editButtons = getAttendanceEditButtons(studentId);
+        if (!selects.length || !editButtons.length) return;
+
+        // Check if currently disabled in any view
+        const isCurrentlyDisabled = selects.some(function (s) { return s.disabled; });
+
+        selects.forEach(function (select) {
+            if (isCurrentlyDisabled) {
+                select.disabled = false;
+                try { select.focus(); } catch (e) {}
+            } else {
+                select.value = select.getAttribute('data-saved-status') || '';
+                select.disabled = Boolean(select.getAttribute('data-saved-status'));
+            }
+        });
+
+        editButtons.forEach(function (editButton) {
+            if (isCurrentlyDisabled) {
+                editButton.innerHTML = '<i class="fa-solid fa-xmark mr-1"></i>Cancel';
+                editButton.classList.remove('border-slate-200', 'bg-slate-50', 'text-slate-600');
+                editButton.classList.add('border-amber-300', 'bg-amber-50', 'text-amber-800');
+            } else {
+                editButton.innerHTML = '<i class="fa-solid fa-pen-to-square mr-1"></i>Edit';
+                editButton.classList.remove('border-amber-300', 'bg-amber-50', 'text-amber-800');
+                editButton.classList.add('border-slate-200', 'bg-slate-50', 'text-slate-600');
+            }
+        });
     }
 
     function viewStudentAttendance(studentId) {
@@ -3142,41 +3316,59 @@ window.DIVINE_PAGE_BACKENDS = {
             showToast('Only Admins and Teachers can save attendance.', 'error');
             return;
         }
-        const select = findAttendanceSelect(studentId);
-        const saveButton = Array.from(document.querySelectorAll('[data-attendance-save]')).find(function (button) {
-            return String(button.getAttribute('data-attendance-save')) === String(studentId);
-        });
-        if (!select || !select.value) {
-            if (select) {
-                select.value = 'Present';
-                select.disabled = false;
-            } else {
-                showToast('Select an attendance status before saving this student.', 'warning');
-                return;
+        const selects = getAttendanceSelects(studentId);
+        const saveButtons = getAttendanceSaveButtons(studentId);
+        const editButtons = getAttendanceEditButtons(studentId);
+
+        let statusValue = '';
+        for (let i = 0; i < selects.length; i++) {
+            if (selects[i].value) {
+                statusValue = selects[i].value;
+                break;
             }
         }
+        if (!statusValue) {
+            statusValue = 'Present';
+        }
+
         const student = ((state.attendanceRoster && state.attendanceRoster.students) || state.students || []).find(function (record) {
             return String(record.id) === String(studentId) || String(record.roll) === String(studentId);
         });
         const targetStudentId = student ? student.id : studentId;
         const studentName = (student && student.name) || 'student';
-        const statusValue = select.value;
 
-        // Instant visual feedback (0-1s)
-        if (saveButton) {
-            saveButton.innerHTML = '<i class="fa-solid fa-check text-emerald-300 mr-1"></i>Saved';
+        // Update all corresponding select elements (desktop and mobile)
+        selects.forEach(function (select) {
+            select.value = statusValue;
+            select.setAttribute('data-saved-status', statusValue);
+            select.disabled = true;
+        });
+
+        // Reset edit buttons back to "Edit" state
+        editButtons.forEach(function (editButton) {
+            editButton.innerHTML = '<i class="fa-solid fa-pen-to-square mr-1"></i>Edit';
+            editButton.classList.remove('border-amber-300', 'bg-amber-50', 'text-amber-800');
+            editButton.classList.add('border-slate-200', 'bg-slate-50', 'text-slate-600');
+        });
+
+        // Instant visual feedback on all matching save buttons (0-1s)
+        saveButtons.forEach(function (saveButton) {
+            const saveIcon = saveButton.querySelector('[data-attendance-save-icon]');
+            const saveLabel = saveButton.querySelector('[data-attendance-save-label]');
+            if (saveIcon) saveIcon.className = 'fa-solid fa-check text-emerald-300 mr-1';
+            if (saveLabel) saveLabel.textContent = 'Saved';
             saveButton.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
             saveButton.classList.add('bg-emerald-600');
             setTimeout(function () {
                 if (saveButton) {
-                    saveButton.innerHTML = '<i class="fa-solid fa-floppy-disk mr-1"></i>Save';
+                    if (saveIcon) saveIcon.className = 'fa-solid fa-floppy-disk mr-1';
+                    if (saveLabel) saveLabel.textContent = 'Update';
                     saveButton.classList.remove('bg-emerald-600');
                     saveButton.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
                 }
             }, 1800);
-        }
-        select.setAttribute('data-saved-status', statusValue);
-        select.disabled = true;
+        });
+
         showToast('Attendance saved for ' + studentName + ' (' + statusValue + ').', 'success');
 
         saveAttendanceEntries([{
@@ -3191,14 +3383,17 @@ window.DIVINE_PAGE_BACKENDS = {
             return;
         }
         const saveButton = document.querySelector('button[onclick="saveDailyAttendance()"]');
-        const entries = Array.from(document.querySelectorAll('[data-attendance-student]')).map(function (select) {
-            if (!select.value) {
-                select.value = 'Present';
+        const entriesMap = {};
+        document.querySelectorAll('[data-attendance-student]').forEach(function (select) {
+            const sId = select.getAttribute('data-attendance-student');
+            if (sId) {
+                if (!select.value) select.value = 'Present';
+                if (!entriesMap[sId]) {
+                    entriesMap[sId] = { studentId: sId, status: select.value };
+                }
             }
-            return { studentId: select.getAttribute('data-attendance-student'), status: select.value };
-        }).filter(function (entry) {
-            return entry.status;
         });
+        const entries = Object.values(entriesMap);
         if (!entries.length) {
             showToast('Mark at least one student before saving attendance.', 'warning');
             return;
@@ -3220,13 +3415,21 @@ window.DIVINE_PAGE_BACKENDS = {
             }, 1800);
         }
 
-        // Lock select dropdowns immediately
+        // Lock all select dropdowns immediately and reset edit buttons
         entries.forEach(function (entry) {
-            const selectEl = document.querySelector('[data-attendance-student="' + entry.studentId + '"]');
-            if (selectEl) {
+            getAttendanceSelects(entry.studentId).forEach(function (selectEl) {
                 selectEl.setAttribute('data-saved-status', entry.status);
                 selectEl.disabled = true;
-            }
+            });
+            getAttendanceEditButtons(entry.studentId).forEach(function (btn) {
+                btn.innerHTML = '<i class="fa-solid fa-pen-to-square mr-1"></i>Edit';
+                btn.classList.remove('border-amber-300', 'bg-amber-50', 'text-amber-800');
+                btn.classList.add('border-slate-200', 'bg-slate-50', 'text-slate-600');
+            });
+            getAttendanceSaveButtons(entry.studentId).forEach(function (btn) {
+                const saveLabel = btn.querySelector('[data-attendance-save-label]');
+                if (saveLabel) saveLabel.textContent = 'Update';
+            });
         });
 
         showToast('Attendance saved for ' + entries.length + ' students.', 'success');
@@ -3246,6 +3449,7 @@ window.DIVINE_PAGE_BACKENDS = {
 
         // 1. Instantly update in-memory attendance state
         if (!Array.isArray(state.attendanceRecords)) state.attendanceRecords = [];
+        state.attendanceRecords = getUniqueAttendanceRecords(state.attendanceRecords, false);
         entries.forEach(function (entry) {
             const rowId = String(state.attendanceDate) + '_' + String(state.attendanceBatchId) + '_' + String(entry.studentId);
             const existingIdx = state.attendanceRecords.findIndex(function (r) {
@@ -3312,11 +3516,13 @@ window.DIVINE_PAGE_BACKENDS = {
         const monthNum = parts[1];
 
         // Match existing records in state.attendanceRecords
-        const matchingRecords = (state.attendanceRecords || []).filter(function (r) {
+        const matchingRecords = getUniqueAttendanceRecords((state.attendanceRecords || []).filter(function (r) {
             const dateMatch = r.date && r.date.slice(0, 7) === yearMonth;
-            const studentMatch = String(r.studentId) === String(sId) || String(r.studentId) === String(sRoll);
+            const recordStudentId = String(r.studentId || r.student_id || '').trim().toLowerCase();
+            const studentMatch = recordStudentId === String(sId || '').trim().toLowerCase() ||
+                recordStudentId === String(sRoll || '').trim().toLowerCase();
             return dateMatch && studentMatch;
-        });
+        }), true);
 
         let records = [];
         if (matchingRecords.length > 0) {
@@ -4215,7 +4421,10 @@ window.DIVINE_PAGE_BACKENDS = {
                 dummyDataWiped: false,
                 studentSeedDataDisabled: false,
                 guideButtonRoles: { admin: true, teacher: true, student: true },
-                themeMenuButtonRoles: { admin: true, teacher: true, student: true }
+                themeMenuButtonRoles: { admin: true, teacher: true, student: true },
+                supabaseEnabled: true,
+                supabaseUrl: 'https://srjqsofkjizwskqnzyfn.supabase.co',
+                supabaseKey: 'sb_publishable_vxonFVKPpyJjY5O-Y9mS6g_bhSYCcsS'
             },
 
             // Institute Notifications (Req: Real-time alerts, fees reminder, tests, DPPs)
@@ -4502,7 +4711,56 @@ window.DIVINE_PAGE_BACKENDS = {
             const syncRevision = localDataRevision;
             const hasAppsScriptBridge = typeof google !== 'undefined' && google.script && google.script.run;
             const supabaseEnabled = state.settings && state.settings.supabaseEnabled === true;
-            if (hasAppsScriptBridge) {
+            const isAndroidApp = document.documentElement.classList.contains('android-app');
+            const hasPendingLocalChanges = localStorage.getItem(PENDING_SYNC_KEY) === '1';
+            if (isAndroidApp && !hasPendingLocalChanges && hasAppsScriptBridge) {
+                manualSyncPromise = new Promise(function (resolve, reject) {
+                    google.script.run
+                        .withSuccessHandler(resolve)
+                        .withFailureHandler(reject)
+                        .apiGetInitialData();
+                }).then(function (remoteData) {
+                    if (!remoteData || typeof remoteData !== 'object') {
+                        throw new Error('The cloud returned no application data.');
+                    }
+                    [
+                        'batches', 'students', 'teachers', 'materials', 'offlineTests',
+                        'gallery', 'externalLinks', 'feedbacks', 'notifications', 'attendanceRecords'
+                    ].forEach(function (key) {
+                        if (Array.isArray(remoteData[key])) state[key] = remoteData[key];
+                    });
+                    const currentSettings = state.settings || {};
+                    state.settings = Object.assign({}, currentSettings, remoteData.settings || {});
+                    if (supabaseEnabled) {
+                        state.settings.supabaseEnabled = true;
+                        state.settings.supabaseUrl = currentSettings.supabaseUrl;
+                        state.settings.supabaseKey = currentSettings.supabaseKey;
+                        return loadDataFromSupabase();
+                    }
+                    return null;
+                }).then(function () {
+                    saveStateLocally(true, true);
+                    if (state.isAuthenticated) {
+                        updateRoleUI();
+                        renderSidebar();
+                        if (state.activeTab !== 'settings') renderMainContentPreservingScroll();
+                    }
+                    updateNotificationBadge();
+                    return { synced: true };
+                });
+            } else if (isAndroidApp && !hasPendingLocalChanges && supabaseEnabled &&
+                typeof loadDataFromSupabase === 'function') {
+                manualSyncPromise = loadDataFromSupabase().then(function () {
+                    saveStateLocally(true, true);
+                    if (state.isAuthenticated) {
+                        updateRoleUI();
+                        renderSidebar();
+                        if (state.activeTab !== 'settings') renderMainContentPreservingScroll();
+                    }
+                    updateNotificationBadge();
+                    return { synced: true };
+                });
+            } else if (hasAppsScriptBridge) {
                 manualSyncPromise = new Promise(function (resolve, reject) {
                     google.script.run
                         .withSuccessHandler(resolve)
@@ -4539,6 +4797,9 @@ window.DIVINE_PAGE_BACKENDS = {
             }).catch(function (error) {
                 console.warn('Manual background sync notice:', error);
                 updateSyncBadge('Cloud sync failed — local data is saved', 'error');
+                if (typeof showToast === 'function') {
+                    showToast('Cloud sync failed: ' + (error && error.message ? error.message : 'Please retry.'), 'error');
+                }
             }).finally(function () {
                 manualSyncPromise = null;
             });
@@ -5523,8 +5784,51 @@ window.DIVINE_PAGE_BACKENDS = {
             }
         }
 
-        // Refresh data without moving the user's position in the scrollable panel.
+        function getMonthlyFeeSummary(students) {
+            const activeStudents = (students || []).filter(student => student && student.status !== 'Inactive');
+            const monthlyAmount = activeStudents.reduce(
+                (total, student) => total + (Number(student.monthlyFee) || 1000), 0);
+            return { monthlyAmount, studentCount: activeStudents.length };
+        }
+
+        function refreshDashboardMetricsInPlace() {
+            const container = document.getElementById('main-content');
+            if (!container || state.activeTab !== 'dashboard') return false;
+
+            const isStudent = state.currentRole === 'student';
+            const { batch: studentBatch, batchId: studentBatchId } = getCurrentStudentAndBatch();
+            const activeStudents = (state.students || []).filter(student => student && student.status !== 'Inactive');
+            const totalStudents = isStudent
+                ? (studentBatch ? ((studentBatch.studentIds || []).length || 1) : 1)
+                : activeStudents.length;
+            const totalMaterials = isStudent
+                ? (state.materials || []).filter(material =>
+                    !material.batchId || material.batchId === 'all' || material.batchId === 'general' ||
+                    (studentBatchId && String(material.batchId) === String(studentBatchId))).length
+                : (state.materials || []).length;
+            const monthlyFeeSummary = getMonthlyFeeSummary(activeStudents);
+            const values = {
+                'batch-total': isStudent
+                    ? ((studentBatch && studentBatch.name) || 'Enrolled Batch')
+                    : `${(state.batches || []).length} Batches`,
+                'student-total': isStudent ? 'Enrolled & Active' : `${totalStudents} Enrolled Students`,
+                'materials-total': `${totalMaterials} Files`,
+                'tests-total': `${(state.offlineTests || []).length} Conducted`,
+                'fees-total': `₹${monthlyFeeSummary.monthlyAmount.toLocaleString('en-IN')}`,
+                'fees-summary': `Monthly rate across ${monthlyFeeSummary.studentCount} active ${monthlyFeeSummary.studentCount === 1 ? 'student' : 'students'}`
+            };
+            let updated = false;
+            Object.keys(values).forEach(function (key) {
+                const element = container.querySelector('[data-dashboard-value="' + key + '"]');
+                if (!element) return;
+                element.textContent = values[key];
+                updated = true;
+            });
+            return updated;
+        }
+
         function renderMainContentPreservingScroll() {
+            if (state.isAuthenticated && refreshDashboardMetricsInPlace()) return;
             const container = document.getElementById('main-content');
             const panelScrollTop = container ? container.scrollTop : 0;
             const root = document.documentElement;
@@ -5590,11 +5894,8 @@ window.DIVINE_PAGE_BACKENDS = {
             const totalMaterials = isStudent
                 ? (state.materials || []).filter(m => !m.batchId || m.batchId === 'all' || m.batchId === 'general' || (curStudentBatchId && String(m.batchId) === String(curStudentBatchId))).length
                 : (state.materials || []).length;
-            const pendingFeeStudents = activeStudents.filter(s => (s.paidFee || 0) < (s.totalFee || 0)).length;
-            const totalPendingAmount = activeStudents.reduce((acc, s) => acc + ((s.totalFee || 0) - (s.paidFee || 0)), 0);
-            const totalExpected = activeStudents.reduce((acc, s) => acc + (s.totalFee || 0), 0);
-            const collectionPct = totalExpected > 0 ? Math.round(((totalExpected - totalPendingAmount) / totalExpected) * 100) : 0;
             const offlineTestsCount = (state.offlineTests || []).length;
+            const monthlyFeeSummary = getMonthlyFeeSummary(activeStudents);
 
             const stuBalance = curStudent ? ((curStudent.totalFee || 0) - (curStudent.paidFee || 0)) : 0;
             const hasFeeReminder = isStudent && stuBalance > 0 && (state.notifications || []).some(n => !n.read && n.actionTab === 'fees' && (n.targetStudentId === curStudent.id || n.targetRoll === curStudent.roll));
@@ -5638,8 +5939,8 @@ window.DIVINE_PAGE_BACKENDS = {
                         <div onclick="navigateTo('batches')" class="bg-white p-3 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:shadow-md transition cursor-pointer flex items-center justify-between gap-2 group">
                             <div class="min-w-0">
                                 <p class="text-[10px] sm:text-xs font-semibold text-slate-500 leading-tight">${isStudent ? 'My Batch' : 'Active Batches'}</p>
-                                <p class="text-lg sm:text-2xl font-bold text-slate-900 mt-1 font-heading leading-tight truncate">${isStudent ? ((curStudentBatch && curStudentBatch.name) || 'Enrolled Batch') : `${totalBatches} Batches`}</p>
-                                <p class="text-[9px] sm:text-xs text-indigo-600 font-medium mt-1 leading-tight"><i class="fa-solid fa-user-check mr-1"></i>${isStudent ? 'Enrolled & Active' : `${totalStudents} Enrolled Students`}</p>
+                                <p data-dashboard-value="batch-total" class="text-lg sm:text-2xl font-bold text-slate-900 mt-1 font-heading leading-tight truncate">${isStudent ? ((curStudentBatch && curStudentBatch.name) || 'Enrolled Batch') : `${totalBatches} Batches`}</p>
+                                <p class="text-[9px] sm:text-xs text-indigo-600 font-medium mt-1 leading-tight"><i class="fa-solid fa-user-check mr-1"></i><span data-dashboard-value="student-total">${isStudent ? 'Enrolled & Active' : `${totalStudents} Enrolled Students`}</span></p>
                             </div>
                             <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-base sm:text-xl shrink-0 group-hover:bg-indigo-600 group-hover:text-white transition">
                                 <i class="fa-solid fa-users-rectangle"></i>
@@ -5650,7 +5951,7 @@ window.DIVINE_PAGE_BACKENDS = {
                         <div onclick="navigateTo('materials')" class="bg-white p-3 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:shadow-md transition cursor-pointer flex items-center justify-between gap-2 group">
                             <div class="min-w-0">
                                 <p class="text-[10px] sm:text-xs font-semibold text-slate-500 leading-tight">${isStudent ? 'My Batch Materials' : 'Study Uploads'}</p>
-                                <p class="text-lg sm:text-2xl font-bold text-slate-900 mt-1 font-heading leading-tight">${totalMaterials} Files</p>
+                                <p data-dashboard-value="materials-total" class="text-lg sm:text-2xl font-bold text-slate-900 mt-1 font-heading leading-tight">${totalMaterials} Files</p>
                                 <p class="text-[9px] sm:text-xs text-emerald-600 font-medium mt-1 leading-tight"><i class="fa-solid fa-file-pdf mr-1"></i>${isStudent ? 'Assignments & DPPs for your batch' : 'Assignments, DPP & Tests'}</p>
                             </div>
                             <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-base sm:text-xl shrink-0 group-hover:bg-emerald-600 group-hover:text-white transition">
@@ -5662,7 +5963,7 @@ window.DIVINE_PAGE_BACKENDS = {
                         <div onclick="navigateTo('marks')" class="bg-white p-3 sm:p-5 rounded-2xl border border-slate-200/80 shadow-xs hover:shadow-md transition cursor-pointer flex items-center justify-between gap-2 group">
                             <div class="min-w-0">
                                 <p class="text-[10px] sm:text-xs font-semibold text-slate-500 leading-tight">Offline Class Tests</p>
-                                <p class="text-lg sm:text-2xl font-bold text-slate-900 mt-1 font-heading leading-tight">${offlineTestsCount} Conducted</p>
+                                <p data-dashboard-value="tests-total" class="text-lg sm:text-2xl font-bold text-slate-900 mt-1 font-heading leading-tight">${offlineTestsCount} Conducted</p>
                                 <p class="text-[9px] sm:text-xs text-amber-600 font-medium mt-1 leading-tight"><i class="fa-solid fa-chart-simple mr-1"></i>Live Marks Analytics</p>
                             </div>
                             <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center text-base sm:text-xl shrink-0 group-hover:bg-amber-600 group-hover:text-white transition">
@@ -5675,10 +5976,10 @@ window.DIVINE_PAGE_BACKENDS = {
                         <div onclick="navigateTo('fees')" class="bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-950 text-white p-3 sm:p-5 rounded-2xl shadow-md hover:shadow-lg transition cursor-pointer flex items-center justify-between gap-2 group border border-indigo-900/50">
                             <div>
                                 <div class="flex items-center gap-2">
-                                    <p class="text-[10px] sm:text-xs font-semibold text-indigo-300">Pending Fees</p>
+                                    <p class="text-[10px] sm:text-xs font-semibold text-indigo-300">Monthly Fees</p>
                                 </div>
-                                <p class="text-lg sm:text-2xl font-bold mt-1 font-heading leading-tight">₹${totalPendingAmount.toLocaleString('en-IN')}</p>
-                                <p class="text-[9px] sm:text-xs text-rose-300 font-medium mt-1 leading-tight"><i class="fa-solid fa-bell mr-1"></i>${pendingFeeStudents} students pending (${collectionPct}% paid)</p>
+                                <p data-dashboard-value="fees-total" class="text-lg sm:text-2xl font-bold mt-1 font-heading leading-tight">₹${monthlyFeeSummary.monthlyAmount.toLocaleString('en-IN')}</p>
+                                <p class="text-[9px] sm:text-xs text-indigo-200 font-medium mt-1 leading-tight"><i class="fa-solid fa-calendar mr-1"></i><span data-dashboard-value="fees-summary">Monthly rate across ${monthlyFeeSummary.studentCount} active ${monthlyFeeSummary.studentCount === 1 ? 'student' : 'students'}</span></p>
                             </div>
                             <div class="w-8 h-8 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-white/10 text-indigo-300 flex items-center justify-center text-base sm:text-xl shrink-0 group-hover:scale-110 transition">
                                 <i class="fa-solid fa-indian-rupee-sign"></i>
@@ -8511,9 +8812,8 @@ window.DIVINE_PAGE_BACKENDS = {
                 (b.studentIds || []).some(id => String(id) === String(student.id) || String(id) === String(student.roll))
             );
             const batchNames = batches.map(b => b.name).join(', ') || (batch ? batch.name : 'General Batch');
-            const totalFee = Number(student.totalFee || student.fee || 0);
-            const paidFee = Number(student.paidFee || 0);
-            const balanceFee = Math.max(0, totalFee - paidFee);
+            const monthlyFee = Number(student.monthlyFee) || 1000;
+            const totalPaidFees = Math.max(0, Number(student.paidFee) || 0);
 
             const modalHtml = `
                 <div class="space-y-5 text-slate-800 dark:text-slate-100">
@@ -8553,9 +8853,13 @@ window.DIVINE_PAGE_BACKENDS = {
                             <span class="text-slate-500 font-medium">Enrollment Status:</span>
                             <span class="font-bold ${student.status === 'Blocked' ? 'text-rose-600' : 'text-emerald-600'}">${escapeHtml(student.status || 'Active')}</span>
                         </div>
+                        <div class="flex justify-between py-1 border-b border-slate-200/50 dark:border-slate-700/50">
+                            <span class="text-slate-500 font-medium">Monthly Fee:</span>
+                            <span class="font-bold text-slate-800 dark:text-slate-200">₹${monthlyFee.toLocaleString('en-IN')}</span>
+                        </div>
                         <div class="flex justify-between py-1">
-                            <span class="text-slate-500 font-medium">Fee Summary:</span>
-                            <span class="font-bold ${balanceFee > 0 ? 'text-amber-600' : 'text-emerald-600'}">₹${paidFee.toLocaleString('en-IN')} paid of ₹${totalFee.toLocaleString('en-IN')} ${balanceFee > 0 ? `(₹${balanceFee.toLocaleString('en-IN')} balance)` : '✓ Fully Cleared'}</span>
+                            <span class="text-slate-500 font-medium">Total Paid Fees:</span>
+                            <span class="font-bold text-emerald-600">₹${totalPaidFees.toLocaleString('en-IN')}</span>
                         </div>
                     </div>
 
@@ -10193,9 +10497,6 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
                     <div>
                         <label class="block text-xs font-semibold text-slate-700 mb-1">Image URL</label>
                         <input type="url" id="gal-url" value="https://images.unsplash.com/photo-1523580494863-6f3031224c94?auto=format&fit=crop&w=800&q=80" class="w-full px-3.5 py-2 text-xs border border-slate-200 rounded-xl">
-                    </div>
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-700 mb-1">Caption / Description *</label>
                         <textarea id="gal-caption" rows="2" required placeholder="Heartiest congratulations to all our Divine Classes toppers!" class="w-full px-3.5 py-2 text-xs border border-slate-200 rounded-xl"></textarea>
                     </div>
                     <div class="flex justify-end gap-2 pt-3 border-t border-slate-100">
@@ -12126,13 +12427,70 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
             `;
         }
 
-        function createDummyDataAndRecords() {
+        async function reloadDataAfterDummyOperation(remoteData) {
+            const currentRole = state.currentRole;
+            const isAuthenticated = state.isAuthenticated;
+            if (!state.settings) state.settings = {};
+            state.settings.dummyDataWiped = false;
+            state.settings.showDummyData = true;
+            state.settings.supabaseEnabled = true;
+            if (!state.settings.supabaseUrl) state.settings.supabaseUrl = 'https://srjqsofkjizwskqnzyfn.supabase.co';
+            if (!state.settings.supabaseKey) state.settings.supabaseKey = 'sb_publishable_vxonFVKPpyJjY5O-Y9mS6g_bhSYCcsS';
+            delete state.settings._applicationDataClearEpoch;
+
+            const collections = [
+                'batches', 'students', 'teachers', 'materials', 'offlineTests',
+                'gallery', 'externalLinks', 'feedbacks', 'notifications', 'attendanceRecords'
+            ];
+
+            if (remoteData && typeof remoteData === 'object') {
+                collections.forEach(function (key) {
+                    if (Array.isArray(remoteData[key])) state[key] = remoteData[key];
+                });
+                if (remoteData.settings && typeof remoteData.settings === 'object') {
+                    state.settings = Object.assign({}, state.settings, remoteData.settings);
+                    state.settings.supabaseEnabled = true;
+                    state.settings.showDummyData = true;
+                    state.settings.dummyDataWiped = false;
+                }
+            }
+
+            let refreshError = null;
+            try {
+                if (typeof loadDataFromSupabase === 'function') {
+                    const result = await loadDataFromSupabase();
+                    if (result && result.loadErrors && result.loadErrors.length) {
+                        console.warn('Some Supabase tables had load issues:', result.loadErrors);
+                    }
+                }
+            } catch (error) {
+                refreshError = error;
+                console.error('[Supabase] Failed to load tables after creating dummy data:', error);
+            }
+
+            state.settings.supabaseEnabled = true;
+            state.settings.showDummyData = true;
+            state.settings.dummyDataWiped = false;
+            delete state.settings._applicationDataClearEpoch;
+
+            state.currentRole = currentRole;
+            state.isAuthenticated = isAuthenticated;
+            saveStateLocally(true, true);
+            if (typeof savePersistentSettingsToLocal === 'function') savePersistentSettingsToLocal();
+            if (typeof updateRoleUI === 'function') updateRoleUI();
+            if (typeof renderSidebar === 'function') renderSidebar();
+            if (typeof renderMainContentPreservingScroll === 'function') {
+                renderMainContentPreservingScroll();
+            } else if (typeof renderMainContent === 'function') {
+                renderMainContent();
+            }
+            if (typeof updateNotificationBadge === 'function') updateNotificationBadge();
+            if (refreshError) throw refreshError;
+        }
+
+        async function createDummyDataAndRecords() {
             if (state.currentRole !== 'developer' && state.currentRole !== 'admin') {
                 showToast('Only the Administrator or Developer can create demo data and initialize database.', 'error');
-                return;
-            }
-            if (typeof google === 'undefined' || !google.script || !google.script.run) {
-                showToast('Open the deployed cloud app to create database records.', 'error');
                 return;
             }
             const button = document.getElementById('btn-create-dummy-records');
@@ -12147,54 +12505,73 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
                     currentButton.innerHTML = '<i class="fa-solid fa-wand-magic-sparkles"></i> Create Dummy Data';
                 }
             };
-            google.script.run
-                .withSuccessHandler(function(result) {
-                    restoreButton();
-                    if (!result || !result.success) {
-                        showToast((result && result.error) || 'Could not create demo data.', 'error');
-                        return;
+
+            if (!state.settings) state.settings = {};
+            state.settings.dummyDataWiped = false;
+            state.settings.showDummyData = true;
+            state.settings.supabaseEnabled = true;
+            if (!state.settings.supabaseUrl) state.settings.supabaseUrl = 'https://srjqsofkjizwskqnzyfn.supabase.co';
+            if (!state.settings.supabaseKey) state.settings.supabaseKey = 'sb_publishable_vxonFVKPpyJjY5O-Y9mS6g_bhSYCcsS';
+            delete state.settings._applicationDataClearEpoch;
+            if (typeof savePersistentSettingsToLocal === 'function') {
+                savePersistentSettingsToLocal();
+            }
+
+            if (typeof google !== 'undefined' && google.script && google.script.run) {
+                google.script.run
+                    .withSuccessHandler(function(result) {
+                        restoreButton();
+                        if (!result || !result.success) {
+                            showToast((result && result.error) || 'Could not create demo data.', 'error');
+                            return;
+                        }
+                        google.script.run
+                            .withSuccessHandler(async function(remoteData) {
+                                try {
+                                    if (!remoteData) throw new Error('The updated Cloud data was not returned.');
+                                    await reloadDataAfterDummyOperation(remoteData);
+                                    showToast(result.studentSeedDataDisabled
+                                        ? '✓ Demo records created. Student seed records remain disabled; add students through the portal.'
+                                        : '✓ Demo records created, loaded from Supabase, and synchronized with Cloud (' +
+                                            (result.sheetCount || 8) + ' tables updated).', 'success');
+                                } catch (error) {
+                                    showToast('Demo data was created, but refreshing from Supabase failed: ' +
+                                        ((error && error.message) || 'Unknown error'), 'error');
+                                }
+                            })
+                            .withFailureHandler(function(error) {
+                                showToast('Demo data was created, but the updated Cloud state could not be loaded: ' +
+                                    ((error && error.message) || 'Server error'), 'error');
+                            })
+                            .apiGetInitialData();
+                    })
+                    .withFailureHandler(function(error) {
+                        restoreButton();
+                        showToast('Demo data creation failed: ' + ((error && error.message) || 'Server error'), 'error');
+                    })
+                    .apiCreateDummyDataAndSheets();
+            } else {
+                try {
+                    if (typeof loadDataFromSupabase === 'function') {
+                        await loadDataFromSupabase();
                     }
-                    if (!state.settings) state.settings = {};
-                    state.settings.dummyDataWiped = false;
+                    restoreButton();
+                    state.settings.supabaseEnabled = true;
                     state.settings.showDummyData = true;
-                    if (typeof savePersistentSettingsToLocal === 'function') {
-                        savePersistentSettingsToLocal();
-                    }
-                    showToast(result.studentSeedDataDisabled
-                        ? '✓ Demo records created. Student seed records remain disabled; add students through the portal.'
-                        : '✓ Demo records created and synchronized with Cloud (' + (result.sheetCount || 8) + ' tables updated).', 'success');
-                    google.script.run
-                        .withSuccessHandler(function(remoteData) {
-                            if (remoteData && remoteData.students) {
-                                state.batches = remoteData.batches || [];
-                                state.students = remoteData.students || [];
-                                state.materials = remoteData.materials || [];
-                                state.offlineTests = remoteData.offlineTests || [];
-                                state.teachers = remoteData.teachers || [];
-                                state.gallery = remoteData.gallery || [];
-                                state.externalLinks = remoteData.externalLinks || [];
-                                state.feedbacks = remoteData.feedbacks || [];
-                                if (remoteData.settings) {
-                                    state.settings = Object.assign({}, state.settings, remoteData.settings);
-                                    state.settings.dummyDataWiped = false;
-                                    state.settings.showDummyData = true;
-                                }
-                                saveStateLocally();
-                                if (typeof syncPendingDataToSupabase === 'function' && state.settings && state.settings.supabaseEnabled === true) {
-                                    syncPendingDataToSupabase().catch(function() {});
-                                }
-                                renderSidebar();
-                                if (state.activeTab === 'settings') renderMainContent();
-                            }
-                        })
-                        .withFailureHandler(function() {})
-                        .apiGetInitialData();
-                })
-                .withFailureHandler(function(error) {
+                    state.settings.dummyDataWiped = false;
+                    saveStateLocally(true, true);
+                    if (typeof savePersistentSettingsToLocal === 'function') savePersistentSettingsToLocal();
+                    if (typeof updateRoleUI === 'function') updateRoleUI();
+                    if (typeof renderSidebar === 'function') renderSidebar();
+                    if (typeof renderMainContentPreservingScroll === 'function') renderMainContentPreservingScroll();
+                    else if (typeof renderMainContent === 'function') renderMainContent();
+                    if (typeof updateNotificationBadge === 'function') updateNotificationBadge();
+                    showToast('✓ Demo data loaded from Supabase across all tables.', 'success');
+                } catch (e) {
                     restoreButton();
-                    showToast('Demo data creation failed: ' + ((error && error.message) || 'Server error'), 'error');
-                })
-                .apiCreateDummyDataAndSheets();
+                    showToast('Failed to load Supabase tables: ' + ((e && e.message) || String(e)), 'error');
+                }
+            }
         }
 
         function handleSheetsBackupToggle(toggle) {
@@ -12298,30 +12675,18 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
             };
             const refresh = function(operationResult) {
                 google.script.run
-                    .withSuccessHandler(function(remoteData) {
+                    .withSuccessHandler(async function(remoteData) {
                         if (!remoteData || !remoteData.settings) {
                             finish('Demo data changed, but the latest Cloud state could not be loaded. Refresh the app to verify it.', false);
                             return;
                         }
-                        const sessionState = {
-                            currentRole: state.currentRole,
-                            isAuthenticated: state.isAuthenticated,
-                            supabaseEnabled: state.settings && state.settings.supabaseEnabled,
-                            supabaseUrl: state.settings && state.settings.supabaseUrl,
-                            supabaseKey: state.settings && state.settings.supabaseKey
-                        };
-                        state = Object.assign(state, remoteData);
-                        state.currentRole = sessionState.currentRole;
-                        state.isAuthenticated = sessionState.isAuthenticated;
-                        if (!state.settings) state.settings = {};
-                        if (sessionState.supabaseEnabled !== undefined) state.settings.supabaseEnabled = sessionState.supabaseEnabled;
-                        if (sessionState.supabaseUrl) state.settings.supabaseUrl = sessionState.supabaseUrl;
-                        if (sessionState.supabaseKey) state.settings.supabaseKey = sessionState.supabaseKey;
-                        saveStateLocally();
-                        savePersistentSettingsToLocal();
-                        updateRoleUI();
-                        renderSidebar();
-                        renderMainContent();
+                        try {
+                            await reloadDataAfterDummyOperation(remoteData);
+                        } catch (error) {
+                            finish('Demo data changed, but Supabase refresh failed: ' +
+                                ((error && error.message) || 'Unknown error'), false);
+                            return;
+                        }
                         const succeeded = enable
                             ? !!(operationResult && operationResult.success)
                             : !!(operationResult && operationResult.success && operationResult.supabaseCleared === true);
@@ -12380,20 +12745,15 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
                             return;
                         }
                         google.script.run
-                            .withSuccessHandler(function(remoteData) {
-                                if (remoteData) {
-                                    ['batches', 'students', 'materials', 'offlineTests', 'teachers', 'gallery', 'externalLinks', 'feedbacks', 'notifications']
-                                        .forEach(function(table) {
-                                            if (Array.isArray(remoteData[table])) state[table] = remoteData[table];
-                                        });
-                                    if (remoteData.settings) {
-                                        state.settings = Object.assign({}, state.settings || {}, remoteData.settings);
-                                        state.settings.dummyDataWiped = false;
-                                        state.settings.showDummyData = true;
-                                    }
-                                    if (typeof saveStateLocally === 'function') saveStateLocally();
+                            .withSuccessHandler(async function(remoteData) {
+                                try {
+                                    if (!remoteData) throw new Error('The updated Cloud data was not returned.');
+                                    await reloadDataAfterDummyOperation(remoteData);
+                                    done("Demo data saved and verified in the Cloud Database, Google Sheets, and Supabase.", true);
+                                } catch (error) {
+                                    done("Demo data was created, but refreshing from Supabase failed: " +
+                                        ((error && error.message) || 'Unknown error'), false);
                                 }
-                                done("Demo data saved and verified in the Cloud Database, Google Sheets, and Supabase.", true);
                             })
                             .withFailureHandler(function(err) {
                                 done("Demo data was created, but refreshing the app state failed: " +
@@ -14239,10 +14599,9 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
                 });
             } catch (e) { }
 
-            // If Supabase is already enabled from localStorage, load immediately (don't wait for Apps Script)
+            // Supabase is primary database — load immediately (don't wait for Apps Script)
             if (state.settings && state.settings.supabaseEnabled === true && state.settings.supabaseUrl && state.settings.supabaseKey) {
-                console.log('[Supabase] Early load from localStorage config');
-                const earlyBefore = typeof crossDeviceComparableState === 'function' ? crossDeviceComparableState(state) : '';
+                console.log('[Supabase] Early load from Supabase');
                 loadDataFromSupabase().then(function() {
                     saveStateLocally(true, true);
                     if (typeof savePersistentSettingsToLocal === 'function') {
@@ -14251,24 +14610,26 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
                     if (typeof startSupabaseLiveSync === 'function') {
                         startSupabaseLiveSync();
                     }
-                    const earlyAfter = typeof crossDeviceComparableState === 'function' ? crossDeviceComparableState(state) : '';
-                    if (state.isAuthenticated && (!earlyBefore || earlyAfter !== earlyBefore)) {
-                        updateRoleUI();
-                        renderSidebar();
-                        if (state.activeTab !== 'settings') renderMainContentPreservingScroll();
-                    }
-                    updateSyncBadge('✓ Cloud Active', 'success');
+                    try {
+                        const loader = document.getElementById('initial-page-loader');
+                        if (loader) loader.remove();
+                    } catch (e) {}
+                    updateRoleUI();
+                    renderSidebar();
+                    if (state.activeTab !== 'settings') renderMainContentPreservingScroll();
+                    else renderMainContent();
+                    updateNotificationBadge();
+                    updateSyncBadge('✓ Supabase Active', 'success');
                 }).catch(function(err) {
                     console.error('[Supabase] Early load failed:', err);
                     try {
                         const loader = document.getElementById('initial-page-loader');
                         if (loader) loader.remove();
-                        if (state.isAuthenticated) {
-                            updateRoleUI();
-                            renderSidebar();
-                            if (state.activeTab !== 'settings') renderMainContentPreservingScroll();
-                        }
                     } catch(e) {}
+                    updateRoleUI();
+                    renderSidebar();
+                    if (state.activeTab !== 'settings') renderMainContentPreservingScroll();
+                    else renderMainContent();
                 });
             }
 
@@ -14279,22 +14640,19 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
                         if (remoteData && remoteData.students) {
                             const remoteSettings = remoteData.settings || {};
                             const cachedSupabaseSettings = state.settings || {};
-                            const remoteSupabaseEnabled = remoteSettings.supabaseEnabled === true ||
-                                remoteSettings.supabaseEnabled === 'true' ||
-                                remoteSettings.supabaseEnabled === 'On';
-                            const useSupabaseAsPrimary = cachedSupabaseSettings.supabaseEnabled === true &&
-                                cachedSupabaseSettings.supabaseUrl && cachedSupabaseSettings.supabaseKey ||
-                                remoteSupabaseEnabled && remoteSettings.supabaseUrl && remoteSettings.supabaseKey;
+                            const remoteSupabaseEnabled = remoteSettings.supabaseEnabled !== false &&
+                                remoteSettings.supabaseEnabled !== 'false' &&
+                                remoteSettings.supabaseEnabled !== 'Off';
+                            const useSupabaseAsPrimary = true;
                             if (useSupabaseAsPrimary) {
-                                const supabaseSettings = cachedSupabaseSettings.supabaseEnabled === true
+                                const supabaseSettings = cachedSupabaseSettings.supabaseUrl
                                     ? cachedSupabaseSettings
                                     : remoteSettings;
                                 state.settings = Object.assign({}, state.settings, remoteSettings, {
                                     supabaseEnabled: true,
-                                    supabaseUrl: supabaseSettings.supabaseUrl,
-                                    supabaseKey: supabaseSettings.supabaseKey
+                                    supabaseUrl: supabaseSettings.supabaseUrl || 'https://srjqsofkjizwskqnzyfn.supabase.co',
+                                    supabaseKey: supabaseSettings.supabaseKey || 'sb_publishable_vxonFVKPpyJjY5O-Y9mS6g_bhSYCcsS'
                                 });
-                                const remoteBefore = typeof crossDeviceComparableState === 'function' ? crossDeviceComparableState(state) : '';
                                 loadDataFromSupabase().then(function (syncResult) {
                                     if (syncResult && syncResult.skipped) return;
                                     [
@@ -14317,26 +14675,23 @@ _Tamper-evident record synced with Divine Classes cloud database._`;
                                         startSupabaseLiveSync();
                                     }
                                     loadAuthSession();
-                                    const remoteAfter = typeof crossDeviceComparableState === 'function' ? crossDeviceComparableState(state) : '';
-                                    if (state.isAuthenticated && (!remoteBefore || remoteAfter !== remoteBefore)) {
-                                        updateRoleUI();
-                                        renderSidebar();
-                                        if (state.activeTab !== 'settings') renderMainContentPreservingScroll();
-                                    }
+                                    updateRoleUI();
+                                    renderSidebar();
+                                    if (state.activeTab !== 'settings') renderMainContentPreservingScroll();
+                                    else renderMainContent();
                                     updateNotificationBadge();
-                                    updateSyncBadge('✓ Cloud Active', 'success');
+                                    updateSyncBadge('✓ Supabase Active', 'success');
                                 }).catch(function (error) {
                                     console.error('[Supabase] Primary data load failed:', error);
-                                    updateSyncBadge('Cloud load failed', 'error');
+                                    updateSyncBadge('Supabase load error', 'error');
                                     try {
                                         const loader = document.getElementById('initial-page-loader');
                                         if (loader) loader.remove();
-                                        if (state.isAuthenticated) {
-                                            updateRoleUI();
-                                            renderSidebar();
-                                            if (state.activeTab !== 'settings') renderMainContentPreservingScroll();
-                                        }
                                     } catch(e) {}
+                                    updateRoleUI();
+                                    renderSidebar();
+                                    if (state.activeTab !== 'settings') renderMainContentPreservingScroll();
+                                    else renderMainContent();
                                 });
                                 return;
                             }

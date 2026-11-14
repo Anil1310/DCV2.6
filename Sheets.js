@@ -448,6 +448,7 @@ function syncReadableSheets(ss, data, throwOnError, preserveProtectedTabs) {
       ensureAttendanceDummySeeds_(attendanceSheet);
       formatAndTrimSheet(attendanceSheet, ATTENDANCE_HEADERS.length, attendanceSheet.getLastRow(), '#4f46e5');
     }
+    formatAttendanceTimestampColumn_(attendanceSheet);
   } catch (err) {
     Logger.log('Error creating readable sheets: ' + err.toString());
     if (throwOnError) throw err;

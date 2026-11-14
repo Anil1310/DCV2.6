@@ -24,7 +24,7 @@ android {
 
     applicationVariants.all { variant ->
         variant.outputs.all {
-            outputFileName = "Divine Classes.V2.6.apk"
+            outputFileName = "Divine Classes.V2.6.1.apk"
         }
     }
 

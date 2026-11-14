@@ -59,6 +59,7 @@
     }
     #btn-sync .sync-status-label {
         max-width: 0;
+        min-width: 0;
         opacity: 0;
         overflow: hidden;
         text-overflow: ellipsis;
@@ -709,6 +710,28 @@
             align-items: center !important;
             justify-content: center !important;
             box-sizing: border-box !important;
+        }
+        #header-action-controls > #btn-sync.sync-status-button {
+            min-width: 2.25rem !important;
+            padding: 0 0.625rem !important;
+            width: 2.25rem !important;
+        }
+        #header-action-controls > #btn-sync.sync-status-button.is-expanded {
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.2);
+            height: 2.25rem !important;
+            min-width: min(12rem, calc(100vw - 1.5rem)) !important;
+            padding: 0 0.625rem !important;
+            position: fixed !important;
+            right: calc(6.375rem + env(safe-area-inset-right, 0px)) !important;
+            top: calc(0.625rem + env(safe-area-inset-top, 0px)) !important;
+            width: min(12rem, calc(100vw - 1.5rem)) !important;
+            z-index: 1000;
+        }
+        #header-action-controls > #btn-sync.sync-status-button.is-collapsed {
+            position: static !important;
+            min-width: 2.25rem !important;
+            padding: 0 0.625rem !important;
+            width: 2.25rem !important;
         }
         #auth-header-container,
         #auth-header-container > div {
