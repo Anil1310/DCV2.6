@@ -1272,8 +1272,12 @@ function apiGetInitialData() {
       appData.settings._applicationDataClearEpoch = appDataClearEpoch;
     }
 
-    // Persist verified state in the Cloud Database
-    dbSaveAll(appData);
+    // Persist verified state in the Cloud Database (non-blocking)
+    try {
+      dbSaveAll(appData);
+    } catch (saveErr) {
+      Logger.log('apiGetInitialData dbSaveAll notice: ' + saveErr.toString());
+    }
     // Keep one daily reminder job installed. Apps Script may ask the owner to
     // authorize this once; failure is non-fatal and the app remains usable.
     try { ensureDailyFeeReminderTrigger_(); } catch (triggerErr) {
@@ -2635,19 +2639,46 @@ function loadFromSupabase_(settings) {
     } }
   ];
 
-  tableRequests.forEach(function (req) {
-    try {
-      const resp = UrlFetchApp.fetch(base + '/' + req.table + '?select=*', options);
-      if (resp.getResponseCode() === 200) {
-        const rows = JSON.parse(resp.getContentText() || '[]');
-        if (Array.isArray(rows) && rows.length > 0) {
-          payload[req.stateKey] = rows.map(req.map);
+  // Batch fetch all 10 tables in parallel via UrlFetchApp.fetchAll for fast startup
+  try {
+    const fetchRequests = tableRequests.map(function (req) {
+      return {
+        url: base + '/' + req.table + '?select=*',
+        method: 'get',
+        headers: headers,
+        muteHttpExceptions: true
+      };
+    });
+    const responses = UrlFetchApp.fetchAll(fetchRequests);
+    responses.forEach(function (resp, idx) {
+      const req = tableRequests[idx];
+      try {
+        if (resp && resp.getResponseCode() === 200) {
+          const rows = JSON.parse(resp.getContentText() || '[]');
+          if (Array.isArray(rows) && rows.length > 0) {
+            payload[req.stateKey] = rows.map(req.map);
+          }
         }
+      } catch (e) {
+        Logger.log('Supabase table parse ' + req.table + ' notice: ' + e.toString());
       }
-    } catch (tblErr) {
-      Logger.log('Supabase table ' + req.table + ' load notice: ' + tblErr.toString());
-    }
-  });
+    });
+  } catch (batchErr) {
+    Logger.log('Supabase fetchAll notice, falling back: ' + batchErr.toString());
+    tableRequests.forEach(function (req) {
+      try {
+        const resp = UrlFetchApp.fetch(base + '/' + req.table + '?select=*', options);
+        if (resp.getResponseCode() === 200) {
+          const rows = JSON.parse(resp.getContentText() || '[]');
+          if (Array.isArray(rows) && rows.length > 0) {
+            payload[req.stateKey] = rows.map(req.map);
+          }
+        }
+      } catch (tblErr) {
+        Logger.log('Supabase table ' + req.table + ' load notice: ' + tblErr.toString());
+      }
+    });
+  }
 
   payload.settings.supabaseEnabled = true;
   payload.settings.showDummyData = true;

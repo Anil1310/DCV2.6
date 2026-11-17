@@ -806,7 +806,8 @@
         const loadErrors = [];
         const emptyTables = [];
         let loadedSnapshot = false;
-        for (const tableName of Object.keys(SUPABASE_TABLE_MAP)) {
+        const tableNames = Object.keys(SUPABASE_TABLE_MAP);
+        await Promise.all(tableNames.map(async function (tableName) {
             try {
                 const config = SUPABASE_TABLE_MAP[tableName];
                 const rawData = await supabaseLoadTable(tableName, config.altTable);
@@ -829,7 +830,7 @@
                 console.warn('Could not load ' + tableName + ' from Supabase (skipping):', e);
                 loadErrors.push(tableName + ': ' + ((e && e.message) || String(e)));
             }
-        }
+        }));
 
         // Handle settings (support both settings_config and settings key-value tables)
         try {
