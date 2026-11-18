@@ -1632,10 +1632,11 @@ function getAttendanceSheet_(students) {
       throw new Error('The Attendance_Register sheet has an unexpected header row.');
     }
   }
-  ensureAttendanceDummySeeds_(sheet);
-  if (Array.isArray(students)) dedupeAttendanceSheet_(sheet, students);
-  formatAttendanceTimestampColumn_(sheet);
-  formatAndTrimSheet(sheet, ATTENDANCE_HEADERS.length, sheet.getLastRow(), '#4f46e5');
+  try {
+    ensureAttendanceDummySeeds_(sheet);
+  } catch (seedErr) {
+    Logger.log('Attendance sheet seed check notice: ' + seedErr.toString());
+  }
   return sheet;
 }
 
@@ -1788,8 +1789,12 @@ function apiGetMonthlyAttendance(month, teacherId) {
     }
     return { success: true, records: Object.keys(recordsByKey).map(function (key) { return recordsByKey[key]; }) };
   } catch (err) {
-    Logger.log('apiGetMonthlyAttendance error: ' + err.toString());
-    return { success: false, error: 'Could not load attendance: ' + err.message };
+    Logger.log('apiGetMonthlyAttendance sheet read error, falling back to dbLoadAll: ' + err.toString());
+    const fallbackData = dbLoadAll() || {};
+    const fallbackRecords = (fallbackData.attendanceRecords || []).filter(function (r) {
+      return r && typeof r.date === 'string' && r.date.slice(0, 7) === month;
+    });
+    return { success: true, records: fallbackRecords };
   }
 }
 

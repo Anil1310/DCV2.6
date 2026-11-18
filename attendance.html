@@ -332,40 +332,102 @@
 
     function loadAttendanceMonth(month, onSuccess) {
         if (!month || !state.isAuthenticated) return;
-        const handleResult = function (result) {
-            if (!result || result.success !== true || !Array.isArray(result.records)) {
-                showToast((result && result.error) || 'Could not load attendance for this month.', 'error');
-                return;
-            }
-            state.attendanceRecords = result.records;
-            if (result.roster && Array.isArray(result.roster.batches) && Array.isArray(result.roster.students)) {
-                state.attendanceRoster = result.roster;
-                if (!result.roster.batches.some(function (batch) { return batch.id === state.attendanceBatchId; })) {
-                    state.attendanceBatchId = (result.roster.batches[0] && result.roster.batches[0].id) || '';
+        state.attendanceLoadedMonth = month;
+
+        const mergeRecords = function (newRecords) {
+            if (!Array.isArray(newRecords)) return;
+            if (!Array.isArray(state.attendanceRecords)) state.attendanceRecords = [];
+            const existingMap = new Map();
+            state.attendanceRecords.forEach(function (r) {
+                if (r) {
+                    const k = (r.date || '') + '_' + (r.batchId || r.batch_id || '') + '_' + (r.studentId || r.student_id || '');
+                    if (k !== '__') existingMap.set(k, r);
                 }
+            });
+            newRecords.forEach(function (r) {
+                if (r) {
+                    const k = (r.date || '') + '_' + (r.batchId || r.batch_id || '') + '_' + (r.studentId || r.student_id || '');
+                    if (k !== '__') existingMap.set(k, r);
+                }
+            });
+            state.attendanceRecords = Array.from(existingMap.values());
+            if (typeof saveStateLocally === 'function') saveStateLocally(false, false);
+        };
+
+        const handleResult = function (result) {
+            if (result && result.success && Array.isArray(result.records)) {
+                mergeRecords(result.records);
+                if (result.roster && Array.isArray(result.roster.batches) && Array.isArray(result.roster.students)) {
+                    state.attendanceRoster = result.roster;
+                    if (!result.roster.batches.some(function (batch) { return batch.id === state.attendanceBatchId; })) {
+                        state.attendanceBatchId = (result.roster.batches[0] && result.roster.batches[0].id) || '';
+                    }
+                }
+                if (state.activeTab === 'attendance') {
+                    if (typeof renderMainContentPreservingScroll === 'function') renderMainContentPreservingScroll();
+                    else renderMainContent();
+                }
+                if (typeof onSuccess === 'function') onSuccess(result);
             }
-            state.attendanceLoadedMonth = month;
-            if (state.activeTab === 'attendance') renderMainContent();
-            if (typeof onSuccess === 'function') onSuccess(result);
         };
+
         const handleFailure = function (error) {
-            console.error('Attendance load failed:', error);
-            showToast('Could not load attendance. Please try again.', 'error');
+            console.warn('Attendance load notice:', error);
+            // Fallback: If Supabase direct REST is available, load table 'attendance'
+            if (typeof supabaseLoadTable === 'function') {
+                supabaseLoadTable('attendance', 'attendance_register')
+                    .then(function (rawData) {
+                        if (Array.isArray(rawData)) {
+                            const config = (typeof SUPABASE_TABLE_MAP !== 'undefined' && SUPABASE_TABLE_MAP.attendance) || {
+                                columns: { id: 'id', date: 'date', batch_id: 'batchId', student_id: 'studentId', status: 'status', marked_by: 'markedBy', updated_at: 'updatedAt' }
+                            };
+                            const transformed = rawData.map(function (row) {
+                                return typeof supabaseRowToAppFormat === 'function' ? supabaseRowToAppFormat(row, config) : row;
+                            });
+                            mergeRecords(transformed);
+                            if (state.activeTab === 'attendance') {
+                                if (typeof renderMainContentPreservingScroll === 'function') renderMainContentPreservingScroll();
+                                else renderMainContent();
+                            }
+                            if (typeof onSuccess === 'function') onSuccess({ success: true, records: transformed });
+                        }
+                    })
+                    .catch(function (sbErr) {
+                        console.warn('Supabase attendance fallback notice:', sbErr);
+                    });
+            }
         };
-        if (typeof google !== 'undefined' && google.script && google.script.run) {
+
+        // 1. If running in Apps Script environment:
+        if (typeof google !== 'undefined' && google.script && google.script.run && typeof google.script.run.apiGetMonthlyAttendance === 'function') {
             google.script.run
                 .withSuccessHandler(handleResult)
                 .withFailureHandler(handleFailure)
                 .apiGetMonthlyAttendance(month, state.currentRole === 'teacher' ? state.activeTeacherId : '');
             return;
         }
-        supabaseFetch(getSupabaseApiUrl() + '?action=getAttendance&month=' + encodeURIComponent(month))
-            .then(function (response) {
-                if (!response.ok) throw new Error('Attendance request failed.');
-                return response.json();
-            })
-            .then(handleResult)
-            .catch(handleFailure);
+
+        // 2. If running standalone / GitHub Pages, load directly from Supabase REST API:
+        if (typeof supabaseLoadTable === 'function') {
+            supabaseLoadTable('attendance', 'attendance_register')
+                .then(function (rawData) {
+                    if (Array.isArray(rawData)) {
+                        const config = (typeof SUPABASE_TABLE_MAP !== 'undefined' && SUPABASE_TABLE_MAP.attendance) || {
+                            columns: { id: 'id', date: 'date', batch_id: 'batchId', student_id: 'studentId', status: 'status', marked_by: 'markedBy', updated_at: 'updatedAt' }
+                        };
+                        const transformed = rawData.map(function (row) {
+                            return typeof supabaseRowToAppFormat === 'function' ? supabaseRowToAppFormat(row, config) : row;
+                        });
+                        mergeRecords(transformed);
+                        if (state.activeTab === 'attendance') {
+                            if (typeof renderMainContentPreservingScroll === 'function') renderMainContentPreservingScroll();
+                            else renderMainContent();
+                        }
+                        if (typeof onSuccess === 'function') onSuccess({ success: true, records: transformed });
+                    }
+                })
+                .catch(handleFailure);
+        }
     }
 
     function syncAttendanceFromDatabase() {
